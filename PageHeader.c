@@ -10,6 +10,7 @@ DESCRIPTION
     Allocate memory for PageHeader
 
 FUNCTION FIELDS
+    [page_size]: Fixed page memory size
     [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
 
 RETURN TYPE
@@ -21,12 +22,58 @@ CHANGELOG
 */
 PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats) {
     PageHeader* new_page_header = (PageHeader*)malloc(page_size * sizeof(PageHeader));
+
+    // Allocate memory for page data separately
+    new_page_header->data = (uint8_t*)malloc(page_size);
+
     assert(new_page_header != NULL);
+    assert(new_page_header->data != NULL);
 
     // ROOT STATISTICS
     (stats->page_headers_allocated)++;
 
     return new_page_header;
+}
+
+/*
+DESCRIPTION
+    Hashkey function. Change a PageHeader address to a hashkey to be used in
+    the PageHashTable.
+
+    Operation Sequence:
+    1. Clip off number of bits equal to the power of 2 in page size
+    2. Right Shift by that number of bits
+    3. Bit AND operation with size of hashtable - 1
+
+FUNCTION FIELDS
+    [int] page_offset_address: Page offset address to change into hashkey
+    [int] page_size: Fixed page memory size
+
+RETURN TYPE
+    [int] hashkey: Calculated and converted hashkey
+
+CHANGELOG
+    First created
+    Aijun Hall, 7/12/2024
+*/
+int calculatePageHeaderHashKey(int page_offset_address, int page_size) {
+    // Calculate the number of bits to shift based on the page size
+    // Assume page size is a power of 2)
+    assert(page_size % 2 == 0);
+
+    int bits_to_shift = 0;
+    int temp_page_size = page_size;
+
+    while (temp_page_size > 1) {
+        temp_page_size >>= 1;
+        bits_to_shift++;
+    }
+
+    // Clip off the bits, right shift, and perform the bit AND operation
+    int shifted_address = page_offset_address >> bits_to_shift;
+    int hashkey = shifted_address & (page_size - 1);
+
+    return hashkey;
 }
 
 /*
@@ -43,13 +90,14 @@ CHANGELOG
     First created
     Aijun Hall, 6/26/2024
 */
-void initializePageHeader(PageHeader* target_page_header, int page_offset_address, uint8_t data) {
+void initializePageHeader(PageHeader* target_page_header, int page_offset_address, int page_size, uint8_t* data) {
     assert(target_page_header != NULL);
+    assert(data >= 0);
 
     target_page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG;
 
     target_page_header->page_offset_address = page_offset_address;
-    target_page_header->hash_key = 0; // #TODO write out hashkey function
+    target_page_header->hash_key = calculatePageHeaderHashKey(page_offset_address, page_size);
 
     target_page_header->hash_next_ptr = NULL;
     target_page_header->hash_prev_ptr = NULL;
@@ -82,5 +130,10 @@ void deletePageHeader(PageHeader* page_header) {
     assert(page_header != NULL);
 
     page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG_INVALID;
+
+    // Free the allocated page data
+    page_header->data = NULL;
+
+    free(page_header->data);
     free(page_header);
 }

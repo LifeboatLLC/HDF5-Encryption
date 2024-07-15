@@ -26,12 +26,12 @@ Node -> No_ -> 0x4E6F5F (invalid struct tag)
 
 #define NODE_SANITY_CHECK_TAG 0x4E6F
 #define NODE_SANITY_CHECK_TAG_INVALID 0x4E6F5F
-#define PRINT_NODE(node) do {                               \
-    printf("[NODE]\n");                                     \
-    printf("STRUCT TAG: %d | ", (node)->sanity_check_tag);  \
-    printf("Data: %d | ", (node)->data);                    \
-    printf("Next: %p | ", (node)->next);                    \
-    printf("Prev: %p\n", (node)->prev);                     \
+#define PRINT_NODE(node) do {                                       \
+    printf("[NODE]\n");                                             \
+    printf("STRUCT TAG: %d | ", node->sanity_check_tag);          \
+    printf("PageHeader Data: %d | ", node->page_header->data[0]);    \
+    printf("Next: %p | ", node->next);                            \
+    printf("Prev: %p\n", node->prev);                             \
 } while(0);
 
 /*
@@ -41,7 +41,7 @@ DESCRIPTION
 STRUCT FIELDS
     [int] sanity_check_tag: Struct tag used for error checking.
 
-    [uint8_t] data: #TODO placeholder value for PageHeaders
+    [PageHeader*] page_header: Pointer to PageHeader within Node.
 
     [Node*] next: Pointer to the next node in the doubly linked list.
 
@@ -53,7 +53,7 @@ CHANGELOG
 */
 typedef struct Node {
     int sanity_check_tag;
-    uint8_t data; // #TODO placeholder value for PageHeaders
+    struct PageHeader* page_header;
     struct Node* next;
     struct Node* prev;
 } Node;
@@ -82,7 +82,7 @@ typedef struct PageBucket {
 } PageBucket;
 
 Node* allocateNode(RootPageBufferStatistics* stats);
-void initializeNode(Node* target_node, uint8_t data);
+void initializeNode(Node* target_node, struct PageHeader* page_header);
 
 void prependNode(Node** head, Node** tail, Node* new_node, signed int* current_page_count);
 void appendNode(Node** head, Node** tail, Node* new_node, signed int* current_page_count);

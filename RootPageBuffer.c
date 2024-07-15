@@ -41,7 +41,10 @@ FUNCTION FIELDS
     N/A
 
 RETURN TYPE
-    [RootPageBuffer*] root_ptr: Pointer to the mock root page buffer.
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
+
+    [RootPageBufferStatistics*] stats: Pointer to RootPageBufferStatistics to
+    initialize.
 
 CHANGELOG
     First created
@@ -68,7 +71,7 @@ DESCRIPTION
     RootPageBufferStatistics.
 
 FUNCTION FIELDS
-    N/A
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [void]
@@ -88,7 +91,7 @@ DESCRIPTION
     and fields are initialized as expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -97,15 +100,21 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testMallocAndInitNode(RootPageBufferStatistics* stats) {
-    Node* node = allocateNode(stats);
+bool testMallocAndInitNode(RootPageBuffer* root) {
+    uint8_t data = 10;
+    PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
+    assert(page_header != NULL);
+
+    Node* node = allocateNode(root->stats);
     assert(node != NULL);
 
-    initializeNode(node, 10);
+    initializePageHeader(page_header, 0x4080, root->page_size, &data);
+    initializeNode(node, page_header);
+
     assert(node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
     assert(node->next == NULL);
     assert(node->prev == NULL);
-    assert(node->data == 10);
+    assert(node->page_header->data[0] == 10);
 
     printf("Test 1 passed: Node created and initialized\n");
 
@@ -121,7 +130,7 @@ DESCRIPTION
     properly to an empty bucket and pointers are set as expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -130,11 +139,15 @@ CHANGELOG
     First created
     Aijun Hall, 6/18/2024
 */
-bool testAppendNodeToEmptyBucket(RootPageBufferStatistics* stats) {
+bool testAppendNodeToEmptyBucket(RootPageBuffer* root) {
     int expected_values[] = {10};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data = 10;
+    PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
+    Node* node = allocateNode(root->stats);
+
+    initializePageHeader(page_header, 0x4080, root->page_size, &data);
+    initializeNode(node, page_header);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -145,7 +158,7 @@ bool testAppendNodeToEmptyBucket(RootPageBufferStatistics* stats) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    appendNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
 
@@ -153,7 +166,7 @@ bool testAppendNodeToEmptyBucket(RootPageBufferStatistics* stats) {
 
     printf("Test 2 passed: Node appended to empty list\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    deleteNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
 
     return true;
 }
@@ -164,7 +177,7 @@ DESCRIPTION
     bucket.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -173,15 +186,23 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testAppendNode(RootPageBufferStatistics* stats) {
+bool testAppendNode(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {10, 20};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
 
-    Node* node1 = allocateNode(stats);
-    initializeNode(node1, 20);
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
+
+    uint8_t data1 = 20;
+    PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
+    Node* node1 = allocateNode(root->stats);
+
+    initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
+    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -216,7 +237,7 @@ DESCRIPTION
     expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -225,15 +246,23 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testPrependNode(RootPageBufferStatistics* stats) {
+bool testPrependNode(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {20, 10};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
 
-    Node* node1 = allocateNode(stats);
-    initializeNode(node1, 20);
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
+
+    uint8_t data1 = 20;
+    PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
+    Node* node1 = allocateNode(root->stats);
+
+    initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
+    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -269,7 +298,7 @@ DESCRIPTION
     expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -278,21 +307,37 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testInsertNode(RootPageBufferStatistics* stats) {
+bool testInsertNode(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {10, 40, 20, 30};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
 
-    Node* node1 = allocateNode(stats);
-    initializeNode(node1, 20);
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
 
-    Node* node2 = allocateNode(stats);
-    initializeNode(node2, 30);
+    uint8_t data1 = 20;
+    PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
+    Node* node1 = allocateNode(root->stats);
 
-    Node* node3 = allocateNode(stats);
-    initializeNode(node3, 40);
+    initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
+    initializeNode(node1, page_header1);
+
+    uint8_t data2 = 30;
+    PageHeader* page_header2 = allocatePageHeader(root->page_size, root->stats);
+    Node* node2 = allocateNode(root->stats);
+
+    initializePageHeader(page_header2, 0x4080, root->page_size, &data2);
+    initializeNode(node2, page_header2);
+
+    uint8_t data3 = 40;
+    PageHeader* page_header3 = allocatePageHeader(root->page_size, root->stats);
+    Node* node3 = allocateNode(root->stats);
+
+    initializePageHeader(page_header3, 0x4080, root->page_size, &data3);
+    initializeNode(node3, page_header3);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -331,7 +376,7 @@ DESCRIPTION
     a bucket behaves as expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -340,11 +385,15 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testDeleteHeadNode(RootPageBufferStatistics* stats) {
+bool testDeleteHeadNode(RootPageBuffer* root) {
     int expected_setup[] = {10};
 
-    Node* node = allocateNode(stats);
-    initializeNode(node, 10);
+    uint8_t data = 10;
+    PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
+    Node* node = allocateNode(root->stats);
+
+    initializePageHeader(page_header, 0x4080, root->page_size, &data);
+    initializeNode(node, page_header);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -377,7 +426,7 @@ DESCRIPTION
     a bucket behaves as expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -386,15 +435,23 @@ CHANGELOG
     First created
     Aijun Hall, 6/10/2024
 */
-bool testDeleteTailNode(RootPageBufferStatistics* stats) {
+bool testDeleteTailNode(RootPageBuffer* root) {
     int expected_setup[] = {10, 20};
     int expected_values[] = {10};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
 
-    Node* node1 = allocateNode(stats);
-    initializeNode(node1, 20);
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
+
+    uint8_t data1 = 20;
+    PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
+    Node* node1 = allocateNode(root->stats);
+
+    initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
+    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -429,7 +486,7 @@ DESCRIPTION
     deleting the middle node from a bucket behaves as expected.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -438,18 +495,30 @@ CHANGELOG
     First created
     Aijun Hall, 6/20/2024
 */
-bool testDeleteMiddleNode(RootPageBufferStatistics* stats) {
+bool testDeleteMiddleNode(RootPageBuffer* root) {
     int expected_setup[] = {10, 20, 30};
     int expected_values[] = {10, 30};
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 10);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
 
-    Node* node1 = allocateNode(stats);
-    initializeNode(node1, 20);
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
 
-    Node* node2 = allocateNode(stats);
-    initializeNode(node2, 30);
+    uint8_t data1 = 20;
+    PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
+    Node* node1 = allocateNode(root->stats);
+
+    initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
+    initializeNode(node1, page_header1);
+
+    uint8_t data2 = 30;
+    PageHeader* page_header2 = allocatePageHeader(root->page_size, root->stats);
+    Node* node2 = allocateNode(root->stats);
+
+    initializePageHeader(page_header2, 0x4080, root->page_size, &data2);
+    initializeNode(node2, page_header2);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -491,7 +560,7 @@ FUNCTION FIELDS
     [int] random_seed: Random seed integer used to make random number generator
     consistent and reproducable between tests.
 
-    [RootPageBufferStatistics* stats] Pointer to Root Page Buffer stats
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
 RETURN TYPE
     [bool] Return True if test passes
@@ -500,11 +569,25 @@ CHANGELOG
     First created
     Aijun Hall, 6/13/2024
 */
-bool testRandomBucketLength(int random_seed, RootPageBufferStatistics* stats) {
+bool testRandomBucketLength(int random_seed, RootPageBuffer* root) {
+    // Expected Values from set random seed; Won't be applicable for other seeds.
+    int expected_values[] = {
+        99, 98, 97, 90, 87, 86, 85, 84, 82, 80, 79, 75, 74,  70, 67, 66, 64, 62,
+        57, 54, 45, 43, 42, 36, 33, 29, 26, 25, 24, 23, 20, 15, 14, 13, 11, 10,
+        9, 8, 4, 2, 1, 0, 95, 83, 81, 78, 73, 71, 69, 65, 58, 56, 55, 53, 52,
+        49, 48, 44, 41, 40, 39, 38, 35, 31, 28, 27, 22, 19, 18, 12, 7, 6, 3, 5,
+        16, 17, 21, 30, 32, 34, 37, 46, 47, 50, 51, 59, 60, 61, 63, 68, 72, 76,
+        77, 88, 89, 91, 92, 93, 94, 96
+    };
+
     srand(random_seed);
 
-    Node* node0 = allocateNode(stats);
-    initializeNode(node0, 0);
+    uint8_t data0 = 10;
+    PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
+    Node* node0 = allocateNode(root->stats);
+
+    initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
+    initializeNode(node0, page_header0);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -516,8 +599,14 @@ bool testRandomBucketLength(int random_seed, RootPageBufferStatistics* stats) {
     for (int i=1; i<100; i++) {
         int random = rand();
 
-        Node* node = allocateNode(stats);
-        initializeNode(node, i);
+        uint8_t data = i;
+        PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
+        Node* node = allocateNode(root->stats);
+
+        initializePageHeader(page_header, 0x4080, root->page_size, &data);
+        initializeNode(node, page_header);
+
+        PRINT_NODE(node);
 
         if (random % 3 == 0) {
             insertNode(&bucket.head, &bucket.tail, node0, node, &bucket.current_page_count);
@@ -533,16 +622,7 @@ bool testRandomBucketLength(int random_seed, RootPageBufferStatistics* stats) {
 
     assert(bucket.current_page_count == 100);
 
-    // Expected Values from set random seed; Won't be applicable for other seeds.
-    int expected_values[] = {
-        99, 98, 97, 90, 87, 86, 85, 84, 82, 80, 79, 75, 74,  70, 67, 66, 64, 62,
-        57, 54, 45, 43, 42, 36, 33, 29, 26, 25, 24, 23, 20, 15, 14, 13, 11, 10,
-        9, 8, 4, 2, 1, 0, 95, 83, 81, 78, 73, 71, 69, 65, 58, 56, 55, 53, 52,
-        49, 48, 44, 41, 40, 39, 38, 35, 31, 28, 27, 22, 19, 18, 12, 7, 6, 3, 5,
-        16, 17, 21, 30, 32, 34, 37, 46, 47, 50, 51, 59, 60, 61, 63, 68, 72, 76,
-        77, 88, 89, 91, 92, 93, 94, 96
-    };
-
+    // printBucket(&bucket);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 9 passed: Monte Carlo Bucket Length Test\n");
@@ -577,31 +657,31 @@ void runPageBucketTests() {
     printf("\nTesting With Random Seed: %d\n", RANDOM_SEED);
 
     // Test 1: Malloc and Init a fresh node
-    assert(testMallocAndInitNode(&stats) == true);
+    assert(testMallocAndInitNode(&root) == true);
 
     // Test 2: Append a node to an empty bucket.
-    assert(testAppendNodeToEmptyBucket(&stats) == true);
+    assert(testAppendNodeToEmptyBucket(&root) == true);
 
     // Test 3: Append a node to a fresh bucket.
-    assert(testAppendNode(&stats) == true);
+    assert(testAppendNode(&root) == true);
 
     // Test 4: Prepend a node to a fresh bucket.
-    assert(testPrependNode(&stats) == true);
+    assert(testPrependNode(&root) == true);
 
     // Test 5: Generic Insert a node to a fresh bucket.
-    assert(testInsertNode(&stats) == true);
+    assert(testInsertNode(&root) == true);
 
     // Test 6: Delete head node from a fresh bucket of len 1.
-    assert(testDeleteHeadNode(&stats) == true);
+    assert(testDeleteHeadNode(&root) == true);
 
     // Test 7: Delete tail node from a fresh bucket of len 2.
-    assert(testDeleteTailNode(&stats) == true);
+    assert(testDeleteTailNode(&root) == true);
 
     // Test 8: Delete middle node from a fresh bucket of len 3.
-    assert(testDeleteMiddleNode(&stats) == true);
+    assert(testDeleteMiddleNode(&root) == true);
 
     // Test 9: Monte Carlo Testing for Bucket Length
-    assert(testRandomBucketLength(RANDOM_SEED, &stats) == true);
+    assert(testRandomBucketLength(RANDOM_SEED, &root) == true);
 
     printf("Root Stats:\n");
     printNodesAllocated(&stats);
@@ -627,10 +707,12 @@ bool testMallocAndInitPageHeader(RootPageBuffer* root) {
     PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
     assert(page_header != NULL);
 
-    initializePageHeader(page_header, 0x256, 10);
+    uint8_t data = 10;
+
+    initializePageHeader(page_header, 0x4080, root->page_size, &data);
 
     assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
-    assert(page_header->page_offset_address == 0x256);
+    assert(page_header->page_offset_address == 0x4080);
     // #TODO update from hash key function
     // assert(page_header->hash_key)
     assert(page_header->hash_next_ptr == NULL);
@@ -643,7 +725,9 @@ bool testMallocAndInitPageHeader(RootPageBuffer* root) {
     assert(page_header->is_read == false);
     assert(page_header->is_write == false);
 
-    assert(page_header->data == 10);
+    assert(page_header->data == &data);
+
+    PRINT_PAGEHEADER(page_header);
 
     printf("Test 1 passed: PageHeader created and initialized\n");
     return true;

@@ -3,6 +3,7 @@ PageBucket.c
 Linked List Utility Functions for Bucket and LRU
 */
 #include "PageBucket.h"
+#include "PageHeader.h"
 
 /*
 DESCRIPTION
@@ -35,7 +36,7 @@ DESCRIPTION
 FUNCTION FIELDS
     [Node*] target_node: Pointer to the node to initialize.
 
-    [uint8_t] data: #TODO placeholder value for PageHeaders
+    [PageHeader*] page_header: Pointer to PageHeader within Node.
 
 RETURN TYPE
     [void]
@@ -44,11 +45,11 @@ CHANGELOG
     First created
     Aijun Hall, 6/2/2024
 */
-void initializeNode(Node* target_node, uint8_t data) {
+void initializeNode(Node* target_node, PageHeader* page_header) {
     assert(target_node != NULL);
 
     target_node->sanity_check_tag = NODE_SANITY_CHECK_TAG;
-    target_node->data = data;
+    target_node->page_header = page_header;
     target_node->next = NULL;
     target_node->prev = NULL;
 }
@@ -336,7 +337,7 @@ void walkAndAssertBucket(Node** head, Node** tail, signed int* current_page_coun
     assert((*head)->prev == NULL);
 
     for (int i=0;i<(*current_page_count);i++) {
-        assert(current->data == expected_values[i]);
+        assert(current->page_header->data[0] == expected_values[i]);
 
         if (i == *(current_page_count)) {
             assert(current->prev == (*tail));

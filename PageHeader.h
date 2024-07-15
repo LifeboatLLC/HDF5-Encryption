@@ -19,6 +19,7 @@ Root Structure of the Page Buffer
 #define PRINT_PAGEHEADER(page_header) do {                                      \
     printf("[pageHeader]\n");                                                   \
     printf("STRUCT TAG: %d \n", (page_header)->sanity_check_tag);               \
+    printf("Data: %d \n", (page_header)->data);                                 \
     printf("Hash Key: %d \n", (page_header)->hash_key);                         \
     printf("Page Offset Address: %d \n", (page_header)->page_offset_address);   \
     printf("HashTable Next Pointer: %p\n", (page_header)->hash_next_ptr);       \
@@ -93,10 +94,11 @@ typedef struct PageHeader {
     bool is_read;
     bool is_write;
 
-    uint8_t data;
+    uint8_t* data;
 } PageHeader;
 
 PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats);
-void initializePageHeader(PageHeader* target_page_header, int page_offset_address, uint8_t data);
+void initializePageHeader(PageHeader* target_page_header, int page_offset_address, int page_size, uint8_t* data);
+int calculatePageHeaderHashKey(int page_offset_address, int page_size);
 
 #endif

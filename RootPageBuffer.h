@@ -69,14 +69,14 @@ void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats);
 void setupMockRootPageBuffer();
 void printNodesAllocated(RootPageBufferStatistics* stats);
 
-bool testMallocAndInitNode(RootPageBufferStatistics* stats);
-bool testAppendNode(RootPageBufferStatistics* stats);
-bool testAppendNodeEmpty(RootPageBufferStatistics* stats);
-bool testPrependNode(RootPageBufferStatistics* stats);
-bool testInsertNode(RootPageBufferStatistics* stats);
-bool testDeleteHeadNode(RootPageBufferStatistics* stats);
-bool testDeleteTailNode(RootPageBufferStatistics* stats);
-bool testRandomBucketLength(int random_seed, RootPageBufferStatistics* stats);
+bool testMallocAndInitNode(RootPageBuffer* root);
+bool testAppendNode(RootPageBuffer* root);
+bool testAppendNodeEmpty(RootPageBuffer* root);
+bool testPrependNode(RootPageBuffer* root);
+bool testInsertNode(RootPageBuffer* root);
+bool testDeleteHeadNode(RootPageBuffer* root);
+bool testDeleteTailNode(RootPageBuffer* root);
+bool testRandomBucketLength(int random_seed, RootPageBuffer* root);
 
 void runPageBucketTests();
 
