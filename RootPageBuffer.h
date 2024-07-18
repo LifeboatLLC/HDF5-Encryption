@@ -36,9 +36,8 @@ CHANGELOG
     Aijun Hall, 6/2/2024
 */
 typedef struct RootPageBufferStatistics {
-    signed int nodes_allocated;
-    signed int nodes_deleted;
     signed int page_headers_allocated;
+    signed int page_headers_deleted;
 } RootPageBufferStatistics;
 
 /*
@@ -67,15 +66,15 @@ typedef struct RootPageBuffer {
 void initializeRootPageBuffer(RootPageBuffer* root_page_buffer, RootPageBufferStatistics* stats);
 void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats);
 void setupMockRootPageBuffer();
-void printNodesAllocated(RootPageBufferStatistics* stats);
+void printPageHeadersAllocated(RootPageBufferStatistics* stats);
 
-bool testMallocAndInitNode(RootPageBuffer* root);
-bool testAppendNode(RootPageBuffer* root);
-bool testAppendNodeEmpty(RootPageBuffer* root);
-bool testPrependNode(RootPageBuffer* root);
-bool testInsertNode(RootPageBuffer* root);
-bool testDeleteHeadNode(RootPageBuffer* root);
-bool testDeleteTailNode(RootPageBuffer* root);
+bool testMallocAndInitPageHeader(RootPageBuffer* root);
+bool testAppendPageHeader(RootPageBuffer* root);
+bool testAppendPageHeaderEmpty(RootPageBuffer* root);
+bool testPrependPageHeader(RootPageBuffer* root);
+bool testInsertPageHeader(RootPageBuffer* root);
+bool testDeleteHeadPageHeader(RootPageBuffer* root);
+bool testDeleteTailPageHeader(RootPageBuffer* root);
 bool testRandomBucketLength(int random_seed, RootPageBuffer* root);
 
 void runPageBucketTests();

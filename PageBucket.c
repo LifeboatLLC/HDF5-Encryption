@@ -7,66 +7,18 @@ Linked List Utility Functions for Bucket and LRU
 
 /*
 DESCRIPTION
-    Allocate memory for a node in the Bucket.
+    Prepend a PageHeader to a given Bucket. Pointer operations to handle new
+    head are handled within this function.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
 
-RETURN TYPE
-    [Node*] new_node: Pointer to newly created Node.
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
 
-CHANGELOG
-    First created
-    Aijun Hall, 6/2/2024
-*/
-Node* allocateNode(RootPageBufferStatistics* stats) {
-    Node* new_node = (Node*)malloc(sizeof(Node));
-    assert(new_node != NULL);
+    [PageHeader*] new_page_header: Pointer to the PageHeader to prepend.
 
-    // ROOT STATISTICS
-    (stats->nodes_allocated)++;
-
-    return new_node;
-}
-
-/*
-DESCRIPTION
-    Initialize fields of a freshly allocated Node with given data.
-
-FUNCTION FIELDS
-    [Node*] target_node: Pointer to the node to initialize.
-
-    [PageHeader*] page_header: Pointer to PageHeader within Node.
-
-RETURN TYPE
-    [void]
-
-CHANGELOG
-    First created
-    Aijun Hall, 6/2/2024
-*/
-void initializeNode(Node* target_node, PageHeader* page_header) {
-    assert(target_node != NULL);
-
-    target_node->sanity_check_tag = NODE_SANITY_CHECK_TAG;
-    target_node->page_header = page_header;
-    target_node->next = NULL;
-    target_node->prev = NULL;
-}
-
-/*
-DESCRIPTION
-    Prepend a Node to a given Bucket via it's head and tail pointer.
-    Pointer operations to handle new head are handled within this function.
-
-FUNCTION FIELDS
-    [Node**] head: Double pointer to the head of a Bucket.
-
-    [Node**] tail: Double pointer to the tail of a Bucket.
-
-    [Node*] new_node: Pointer to the Node to prepend.
-
-    [signed int*] current_page_count: Pointer to the current count of pages in the Bucket
+    [signed int*] current_page_count: Pointer to the current count of
+    PageHeaders in the Bucket
 
 RETURN TYPE
     [void]
@@ -74,33 +26,36 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
 */
-void prependNode(Node** head, Node** tail, Node* new_node, signed int* current_page_count) {
-    assert(new_node != NULL);
-    assert(new_node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
+void prependPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
 
     if (*head == NULL) {
         assert(*tail == NULL);
 
-        new_node->prev = NULL;
-        new_node->next = NULL;
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = NULL;
 
-        *head = new_node;
-        *tail = new_node;
+        *head = new_page_header;
+        *tail = new_page_header;
 
         assert(*head != NULL);
         assert(*tail != NULL);
 
     } else {
-        new_node->next = *head;
-        new_node->prev = NULL;
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = *head;
 
-        assert((*head)->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-        (*head)->prev = new_node;
-        *head = new_node;
+        assert((*head)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*head)->hash_prev_ptr = new_page_header;
+        *head = new_page_header;
 
         assert(*head != NULL);
-        assert((*head)->prev == NULL);
+        assert((*head)->hash_prev_ptr == NULL);
     }
 
     assert(*head != NULL);
@@ -110,17 +65,18 @@ void prependNode(Node** head, Node** tail, Node* new_node, signed int* current_p
 
 /*
 DESCRIPTION
-    Append a Node to a given Bucket via it's head and tail pointer.
-    Pointer operations are handled within this function.
+    Append a PageHeader to a given Bucket. Pointer operations are handled within
+    this function.
 
 FUNCTION FIELDS
-    [Node**] head: Double pointer to the head of a Bucket.
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
 
-    [Node**] tail: Double pointer to the tail of a Bucket.
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
 
-    [Node*] new_node: Pointer to the Node to append.
+    [PageHeader*] new_page_header: Pointer to the PageHeader to append.
 
-    [signed int*] current_page_count: Pointer to the current count of pages in the Bucket
+    [signed int*] current_page_count: Pointer to the current count of
+    PageHeaders in the Bucket
 
 RETURN TYPE
     [void]
@@ -128,33 +84,36 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
 */
-void appendNode(Node** head, Node** tail, Node* new_node, signed int* current_page_count) {
-    assert(new_node != NULL);
-    assert(new_node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
+void appendPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
 
     if (*tail == NULL) {
         assert(*head == NULL);
 
-        new_node->prev = NULL;
-        new_node->next = NULL;
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = NULL;
 
-        *head = new_node;
-        *tail = new_node;
+        *head = new_page_header;
+        *tail = new_page_header;
 
         assert(*head != NULL);
         assert(*tail != NULL);
 
     } else {
-        new_node->prev = *tail;
-        new_node->next = NULL;
+        new_page_header->hash_prev_ptr = *tail;
+        new_page_header->hash_next_ptr = NULL;
 
-        assert((*tail)->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-        (*tail)->next = new_node;
-        *tail = new_node;
+        assert((*tail)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*tail)->hash_next_ptr = new_page_header;
+        *tail = new_page_header;
 
         assert(*tail != NULL);
-        assert((*tail)->next == NULL);
+        assert((*tail)->hash_next_ptr == NULL);
     }
 
     assert(*head != NULL);
@@ -164,18 +123,19 @@ void appendNode(Node** head, Node** tail, Node* new_node, signed int* current_pa
 
 /*
 DESCRIPTION
-    Insert a Node in a given Bucket via its head and tail pointer, relative to
-    an insert target node. Note that insert will always be an appending action.
+    Insert a PageHeader in a given Bucket via its head and tail pointer, relative to
+    an insert target PageHeader. Note that insert will always be an appending action.
     Pointer operations to handle the insertion are handled within this function.
 
 FUNCTION FIELDS
-    [Node**] head: Double pointer to the head of a Bucket.
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
 
-    [Node**] tail: Double pointer to the tail of a Bucket.
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
 
-    [Node*] insert_target_node: Pointer to the Node to insert relative to.
+    [PageHeader*] insert_target_page_header: Pointer to the PageHeader to insert
+    relative to.
 
-    [Node*] new_node: Pointer to the Node to insert.
+    [PageHeader*] new_page_header: Pointer to the PageHeader to insert.
 
     [signed int*] current_page_count: Pointer to the current count of pages in the Bucket.
 
@@ -189,41 +149,44 @@ CHANGELOG
     Removed check for (head == NULL) case. insertNode() should not be used on
     empty bucket.
     Aijun Hall, 6/12/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
 */
-void insertNode(Node** head, Node** tail, Node* insert_target_node, Node* new_node, signed int* current_page_count) {
-    assert(new_node != NULL);
-    assert(insert_target_node != NULL);
+void insertPageHeader(PageHeader** head, PageHeader** tail, PageHeader* insert_target_page_header, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(insert_target_page_header != NULL);
     assert(*head != NULL);
-    assert(new_node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-    assert(insert_target_node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(insert_target_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
 
-    if (insert_target_node == *tail) {
-        new_node->prev = *tail;
-        new_node->next = NULL;
+    if (insert_target_page_header == *tail) {
+        new_page_header->hash_prev_ptr = *tail;
+        new_page_header->hash_next_ptr = NULL;
 
-        assert((*tail)->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-        (*tail)->next = new_node;
-        *tail = new_node;
+        assert((*tail)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*tail)->hash_next_ptr = new_page_header;
+        *tail = new_page_header;
 
         assert(*tail != NULL);
-        assert((*tail)->next == NULL);
+        assert((*tail)->hash_next_ptr == NULL);
     } else {
-        new_node->prev = insert_target_node;
-        new_node->next = insert_target_node->next;
+        new_page_header->hash_prev_ptr = insert_target_page_header;
+        new_page_header->hash_next_ptr = insert_target_page_header->hash_next_ptr;
 
-        if (insert_target_node->next != NULL) {
-            assert((insert_target_node->next)->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-            insert_target_node->next->prev = new_node;
+        if (insert_target_page_header->hash_next_ptr != NULL) {
+            assert((insert_target_page_header->hash_next_ptr)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+            insert_target_page_header->hash_next_ptr->hash_prev_ptr = new_page_header;
         }
 
-        insert_target_node->next = new_node;
+        insert_target_page_header->hash_next_ptr = new_page_header;
 
-        if (insert_target_node == *tail) {
-            *tail = new_node;
+        if (insert_target_page_header == *tail) {
+            *tail = new_page_header;
         }
 
         assert(*tail != NULL);
-        assert((*tail)->next == NULL);
+        assert((*tail)->hash_next_ptr == NULL);
     }
 
     (*current_page_count)++;
@@ -232,16 +195,16 @@ void insertNode(Node** head, Node** tail, Node* insert_target_node, Node* new_no
 
 /*
 DESCRIPTION
-    Delete a Node from a Bucket via it's head and tail pointer.
+    Delete a PageHeader from a Bucket via it's head and tail pointer.
     Pointer operations to handle changing head, tail, or inbetween pointers are
     handled within this function.
 
 FUNCTION FIELDS
-    [Node**] head: Double pointer to the head of a Bucket.
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
 
-    [Node**] tail: Double pointer to the tail of a Bucket.
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
 
-    [Node*] node: Pointer to the Node to delete.
+    [PageHeader*] page_header: Pointer to the PageHeader to delete.
 
     [int*] current_page_count: Pointer to the current count of pages in the Bucket
 
@@ -256,43 +219,46 @@ CHANGELOG
     - if head == tail, then only 1 node in bucket.
     - else at least 2 nodes in bucket.
     Aijun Hall, 6/12/2024
+
+    Adapted to remove Node struct and use PageHeaders directly.
+    Renamed to "removePageHeader" from "deletePageHeader" since freeing the
+    memory is no longer synonomous with Bucket removal.
+    Aijun Hall, 7/17/2024
 */
-void deleteNode(Node** head, Node** tail, Node* node, signed int* current_page_count) {
-    assert(node != NULL);
+void removePageHeader(PageHeader** head, PageHeader** tail, PageHeader* page_header, signed int* current_page_count) {
+    assert(page_header != NULL);
     assert(*head != NULL && *tail != NULL);
-    assert(node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
+    assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
 
     if (*head == *tail) {
-        assert(node == *head);
+        assert(page_header == *head);
 
         *head = NULL;
         *tail = NULL;
     } else {
-        if (node == *head) {
-            *head = node->next;
-            (*head)->prev = NULL;
+        if (page_header == *head) {
+            *head = page_header->hash_next_ptr;
+            (*head)->hash_prev_ptr = NULL;
 
-        } else if (node == *tail) {
-            *tail = node->prev;
-            (*tail)->next = NULL;
+        } else if (page_header == *tail) {
+            *tail = page_header->hash_prev_ptr;
+            (*tail)->hash_next_ptr = NULL;
 
         } else {
-            node->prev->next = node->next;
-            node->next->prev = node->prev;
+            page_header->hash_prev_ptr->hash_next_ptr = page_header->hash_next_ptr;
+            page_header->hash_next_ptr->hash_prev_ptr = page_header->hash_prev_ptr;
 
         }
     }
 
     (*current_page_count)--;
-    node->sanity_check_tag = NODE_SANITY_CHECK_TAG_INVALID;
-    free(node);
 }
 
 /*
 DESCRIPTION
-    Debugging function to print the current state of a bucket. Prints each node
-    using PRINT_NODE macro defined at the top of this file, and then the bucket
-    length.
+    Debugging function to print the current state of a bucket. Prints each
+    PageHeader using PRINT_NODE macro defined at the top of this file, and then
+    the bucket length.
 
 FUNCTION FIELDS
     [PageBucket*] bucket: Pointer to the bucket to print.
@@ -303,13 +269,16 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
 */
 void printBucket(PageBucket* bucket) {
-    Node* current = bucket->head;
+    PageHeader* current = bucket->head;
 
     while (current != NULL) {
-        PRINT_NODE(current);
-        current = current->next;
+        PRINT_PAGE_HEADER(current);
+        current = current->hash_next_ptr;
     };
 
     printf("[LENGTH]\n%d\n", bucket->current_page_count);
@@ -330,19 +299,22 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/18/2024
-*/
-void walkAndAssertBucket(Node** head, Node** tail, signed int* current_page_count, int *expected_values) {
-    Node* current = (*head);
 
-    assert((*head)->prev == NULL);
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void walkAndAssertBucket(PageHeader** head, PageHeader** tail, signed int* current_page_count, int *expected_values) {
+    PageHeader* current = (*head);
+
+    assert((*head)->hash_prev_ptr == NULL);
 
     for (int i=0;i<(*current_page_count);i++) {
-        assert(current->page_header->data[0] == expected_values[i]);
+        assert(current->data[0] == expected_values[i]);
 
         if (i == *(current_page_count)) {
-            assert(current->prev == (*tail));
+            assert(current->hash_prev_ptr == (*tail));
         } else {
-            current = current->next;
+            current = current->hash_next_ptr;
         }
 
     }

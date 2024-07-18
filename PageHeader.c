@@ -78,7 +78,8 @@ int calculatePageHeaderHashKey(int page_offset_address, int page_size) {
 
 /*
 DESCRIPTION
-    Initialize Newly Allocated PageHeader
+    Initialize Allocated PageHeader. Used for newly allocated PageHeaders, and
+    recycled ones.
 
 FUNCTION FIELDS
     [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
@@ -126,13 +127,16 @@ CHANGELOG
     First created
     Aijun Hall, 6/26/2024
 */
-void deletePageHeader(PageHeader* page_header) {
+void deletePageHeader(PageHeader* page_header, RootPageBufferStatistics* stats) {
     assert(page_header != NULL);
 
     page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG_INVALID;
 
     // Free the allocated page data
     page_header->data = NULL;
+
+    // ROOT STATISTICS
+    (stats->page_headers_deleted)++;
 
     free(page_header->data);
     free(page_header);

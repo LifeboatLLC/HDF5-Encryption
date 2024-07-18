@@ -28,8 +28,8 @@ CHANGELOG
 void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats) {
     assert(stats != NULL);
 
-    stats->nodes_allocated = 0;
-    stats->nodes_deleted = 0;
+    stats->page_headers_allocated = 0;
+    stats->page_headers_deleted = 0;
 }
 
 /*
@@ -67,7 +67,7 @@ void setupMockRootPageBuffer(RootPageBuffer* root, RootPageBufferStatistics* sta
 
 /*
 DESCRIPTION
-    Helper Function for Testing. Print Nodes Allocated Stat from the
+    Helper Function for Testing. Print PageHeaders Allocated Stat from the
     RootPageBufferStatistics.
 
 FUNCTION FIELDS
@@ -79,16 +79,19 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/6/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-void printNodesAllocated(RootPageBufferStatistics* stats) {
+void printPageHeadersAllocated(RootPageBufferStatistics* stats) {
     assert(stats != NULL);
-    printf("Nodes Allocated: %d\n", stats->nodes_allocated);
+    printf("PageHeaders Allocated: %d\n", stats->page_headers_allocated);
 }
 
 /*
 DESCRIPTION
-    Unit Test for Initializing a Node. Ensure Node is properly allocated,
-    and fields are initialized as expected.
+    Unit Test for Initializing a PageHeader. Ensure PageHeader is properly
+    allocated, and fields are initialized as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -99,35 +102,34 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
 bool testMallocAndInitNode(RootPageBuffer* root) {
     uint8_t data = 10;
     PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
     assert(page_header != NULL);
 
-    Node* node = allocateNode(root->stats);
-    assert(node != NULL);
-
     initializePageHeader(page_header, 0x4080, root->page_size, &data);
-    initializeNode(node, page_header);
 
-    assert(node->sanity_check_tag == NODE_SANITY_CHECK_TAG);
-    assert(node->next == NULL);
-    assert(node->prev == NULL);
-    assert(node->page_header->data[0] == 10);
+    assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(page_header->hash_next_ptr == NULL);
+    assert(page_header->hash_prev_ptr == NULL);
+    assert(page_header->data[0] == 10);
 
     printf("Test 1 passed: Node created and initialized\n");
 
-    node->sanity_check_tag = NODE_SANITY_CHECK_TAG_INVALID;
-    free(node);
+    page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG_INVALID;
+    free(page_header);
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Appending Nodes into an empty bucket. Ensure Node is appended
-    properly to an empty bucket and pointers are set as expected.
+    Unit Test for Appending PageHeader to an empty bucket. Ensure PageHeader
+    is appended properly to an empty bucket and pointers are set as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -138,16 +140,17 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/18/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testAppendNodeToEmptyBucket(RootPageBuffer* root) {
+bool testAppendPageHeaderToEmptyBucket(RootPageBuffer* root) {
     int expected_values[] = {10};
 
     uint8_t data = 10;
     PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
-    Node* node = allocateNode(root->stats);
 
     initializePageHeader(page_header, 0x4080, root->page_size, &data);
-    initializeNode(node, page_header);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -158,7 +161,7 @@ bool testAppendNodeToEmptyBucket(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
 
@@ -166,15 +169,15 @@ bool testAppendNodeToEmptyBucket(RootPageBuffer* root) {
 
     printf("Test 2 passed: Node appended to empty list\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+    // #TODO properly free data
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Appending Nodes. Ensure Node is appended onto tail of a
-    bucket.
+    Unit Test for Appending PageHeaders. Ensure PageHeader is appended onto tail
+    of a bucket.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -185,24 +188,21 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testAppendNode(RootPageBuffer* root) {
+bool testAppendPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {10, 20};
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
-
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     uint8_t data1 = 20;
     PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
-    Node* node1 = allocateNode(root->stats);
-
     initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
-    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -213,28 +213,27 @@ bool testAppendNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    appendNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 2);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 3 passed: Node appended to the head\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    // #TODO properly free data
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Prepending Nodes. Ensure Nodes are prepended onto head as
-    expected.
+    Unit Test for Prepending PageHeaders. Ensure PageHeaders are prepended onto
+    head as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -245,24 +244,21 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testPrependNode(RootPageBuffer* root) {
+bool testPrependPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {20, 10};
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
-
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     uint8_t data1 = 20;
     PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
-    Node* node1 = allocateNode(root->stats);
-
     initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
-    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -273,29 +269,27 @@ bool testPrependNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    prependNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    prependPageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 2);
-
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 4 passed: Node prepended to the head\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    // #TODO properly free data
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Inserting Nodes. Ensure Nodes are inserted into bucket as
-    expected.
+    Unit Test for Inserting PageHeaders. Ensure PageHeaders are inserted into
+    bucket as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -306,38 +300,29 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testInsertNode(RootPageBuffer* root) {
+bool testInsertPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10};
     int expected_values[] = {10, 40, 20, 30};
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
-
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     uint8_t data1 = 20;
     PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
-    Node* node1 = allocateNode(root->stats);
-
     initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
-    initializeNode(node1, page_header1);
 
     uint8_t data2 = 30;
     PageHeader* page_header2 = allocatePageHeader(root->page_size, root->stats);
-    Node* node2 = allocateNode(root->stats);
-
     initializePageHeader(page_header2, 0x4080, root->page_size, &data2);
-    initializeNode(node2, page_header2);
 
     uint8_t data3 = 40;
     PageHeader* page_header3 = allocatePageHeader(root->page_size, root->stats);
-    Node* node3 = allocateNode(root->stats);
-
     initializePageHeader(page_header3, 0x4080, root->page_size, &data3);
-    initializeNode(node3, page_header3);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -348,32 +333,29 @@ bool testInsertNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    insertNode(&bucket.head, &bucket.tail, node0, node1, &bucket.current_page_count);
-    insertNode(&bucket.head, &bucket.tail, node1, node2, &bucket.current_page_count);
-    insertNode(&bucket.head, &bucket.tail, node0, node3, &bucket.current_page_count);
+    insertPageHeader(&bucket.head, &bucket.tail, page_header0, page_header1, &bucket.current_page_count);
+    insertPageHeader(&bucket.head, &bucket.tail, page_header1, page_header2, &bucket.current_page_count);
+    insertPageHeader(&bucket.head, &bucket.tail, page_header0, page_header3, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 4);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 5 passed: Nodes inserted into bucket\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node2, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node3, &bucket.current_page_count);
+    // #TODO properly free data
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Deleting a Head Node. Ensure that deleting the head node from
-    a bucket behaves as expected.
+    Unit Test for Deleting a Head PageHeader. Ensure that deleting the head node
+    from a bucket behaves as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -384,16 +366,16 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testDeleteHeadNode(RootPageBuffer* root) {
+bool testDeleteHeadPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10};
 
     uint8_t data = 10;
     PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
-    Node* node = allocateNode(root->stats);
-
     initializePageHeader(page_header, 0x4080, root->page_size, &data);
-    initializeNode(node, page_header);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -404,12 +386,12 @@ bool testDeleteHeadNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    deleteNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+    removePageHeader(&bucket.head, &bucket.tail, page_header, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 0);
     assert(bucket.head == NULL);
@@ -422,8 +404,8 @@ bool testDeleteHeadNode(RootPageBuffer* root) {
 
 /*
 DESCRIPTION
-    Unit Test for Deleting a Tail Node. Ensure that deleting the tail node from
-    a bucket behaves as expected.
+    Unit Test for Deleting a Tail PageHeader. Ensure that deleting the tail
+    PageHeader from a bucket behaves as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -434,24 +416,21 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/10/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testDeleteTailNode(RootPageBuffer* root) {
+bool testDeleteTailPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10, 20};
     int expected_values[] = {10};
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
-
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     uint8_t data1 = 20;
     PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
-    Node* node1 = allocateNode(root->stats);
-
     initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
-    initializeNode(node1, page_header1);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -462,28 +441,28 @@ bool testDeleteTailNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    appendNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 2);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    deleteNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    removePageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 1);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 7 passed: Tail node deleted\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    removePageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
     return true;
 }
 
 /*
 DESCRIPTION
-    Unit Test for Deleting a Node in the middle of a bucket. Ensure that
-    deleting the middle node from a bucket behaves as expected.
+    Unit Test for Deleting a PageHeader in the middle of a bucket. Ensure that
+    deleting the middle PageHeader from a bucket behaves as expected.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -494,31 +473,26 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/20/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
-bool testDeleteMiddleNode(RootPageBuffer* root) {
+bool testDeleteMiddlePageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10, 20, 30};
     int expected_values[] = {10, 30};
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
-
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     uint8_t data1 = 20;
     PageHeader* page_header1 = allocatePageHeader(root->page_size, root->stats);
-    Node* node1 = allocateNode(root->stats);
-
     initializePageHeader(page_header1, 0x4080, root->page_size, &data1);
-    initializeNode(node1, page_header1);
 
     uint8_t data2 = 30;
     PageHeader* page_header2 = allocatePageHeader(root->page_size, root->stats);
-    Node* node2 = allocateNode(root->stats);
 
     initializePageHeader(page_header2, 0x4080, root->page_size, &data2);
-    initializeNode(node2, page_header2);
 
     PageBucket bucket;
     bucket.head = NULL;
@@ -529,22 +503,21 @@ bool testDeleteMiddleNode(RootPageBuffer* root) {
     assert(bucket.tail == NULL);
     assert(bucket.current_page_count == 0);
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    appendNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
-    appendNode(&bucket.head, &bucket.tail, node2, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header2, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 3);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_setup);
 
-    deleteNode(&bucket.head, &bucket.tail, node1, &bucket.current_page_count);
+    removePageHeader(&bucket.head, &bucket.tail, page_header1, &bucket.current_page_count);
 
     assert(bucket.current_page_count == 2);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 8 passed: Middle node deleted\n");
 
-    deleteNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
-    deleteNode(&bucket.head, &bucket.tail, node2, &bucket.current_page_count);
+    // #TODO properly free data
 
     return true;
 }
@@ -568,6 +541,9 @@ RETURN TYPE
 CHANGELOG
     First created
     Aijun Hall, 6/13/2024
+
+    Adapted to remove Node and directly use PageHeaders
+    Aijun Hall, 7/18/2024
 */
 bool testRandomBucketLength(int random_seed, RootPageBuffer* root) {
     // Expected Values from set random seed; Won't be applicable for other seeds.
@@ -584,45 +560,41 @@ bool testRandomBucketLength(int random_seed, RootPageBuffer* root) {
 
     uint8_t data0 = 10;
     PageHeader* page_header0 = allocatePageHeader(root->page_size, root->stats);
-    Node* node0 = allocateNode(root->stats);
 
     initializePageHeader(page_header0, 0x4080, root->page_size, &data0);
-    initializeNode(node0, page_header0);
 
     PageBucket bucket;
     bucket.head = NULL;
     bucket.tail = NULL;
     bucket.current_page_count = 0;
 
-    appendNode(&bucket.head, &bucket.tail, node0, &bucket.current_page_count);
+    appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
     for (int i=1; i<100; i++) {
+        printf("current iteration: %d", i);
+        printBucket(&bucket);
         int random = rand();
 
         uint8_t data = i;
         PageHeader* page_header = allocatePageHeader(root->page_size, root->stats);
-        Node* node = allocateNode(root->stats);
 
         initializePageHeader(page_header, 0x4080, root->page_size, &data);
-        initializeNode(node, page_header);
-
-        PRINT_NODE(node);
 
         if (random % 3 == 0) {
-            insertNode(&bucket.head, &bucket.tail, node0, node, &bucket.current_page_count);
+            insertPageHeader(&bucket.head, &bucket.tail, page_header0, page_header, &bucket.current_page_count);
 
         }
         else if (random % 2 == 0) {
-            appendNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+            appendPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
 
         } else {
-            prependNode(&bucket.head, &bucket.tail, node, &bucket.current_page_count);
+            prependPageHeader(&bucket.head, &bucket.tail, page_header0, &bucket.current_page_count);
         }
     }
 
     assert(bucket.current_page_count == 100);
 
-    // printBucket(&bucket);
+    printBucket(&bucket);
     walkAndAssertBucket(&bucket.head, &bucket.tail, &bucket.current_page_count, expected_values);
 
     printf("Test 9 passed: Monte Carlo Bucket Length Test\n");
@@ -657,34 +629,34 @@ void runPageBucketTests() {
     printf("\nTesting With Random Seed: %d\n", RANDOM_SEED);
 
     // Test 1: Malloc and Init a fresh node
-    assert(testMallocAndInitNode(&root) == true);
+    assert(testMallocAndInitPageHeader(&root) == true);
 
     // Test 2: Append a node to an empty bucket.
-    assert(testAppendNodeToEmptyBucket(&root) == true);
+    assert(testAppendPageHeaderToEmptyBucket(&root) == true);
 
     // Test 3: Append a node to a fresh bucket.
-    assert(testAppendNode(&root) == true);
+    assert(testAppendPageHeader(&root) == true);
 
     // Test 4: Prepend a node to a fresh bucket.
-    assert(testPrependNode(&root) == true);
+    assert(testPrependPageHeader(&root) == true);
 
     // Test 5: Generic Insert a node to a fresh bucket.
-    assert(testInsertNode(&root) == true);
+    assert(testInsertPageHeader(&root) == true);
 
     // Test 6: Delete head node from a fresh bucket of len 1.
-    assert(testDeleteHeadNode(&root) == true);
+    assert(testDeleteHeadPageHeader(&root) == true);
 
     // Test 7: Delete tail node from a fresh bucket of len 2.
-    assert(testDeleteTailNode(&root) == true);
+    assert(testDeleteTailPageHeader(&root) == true);
 
     // Test 8: Delete middle node from a fresh bucket of len 3.
-    assert(testDeleteMiddleNode(&root) == true);
+    assert(testDeleteMiddlePageHeader(&root) == true);
 
     // Test 9: Monte Carlo Testing for Bucket Length
     assert(testRandomBucketLength(RANDOM_SEED, &root) == true);
 
     printf("Root Stats:\n");
-    printNodesAllocated(&stats);
+    printPageHeadersAllocated(&stats);
 }
 
 /*
@@ -727,7 +699,7 @@ bool testMallocAndInitPageHeader(RootPageBuffer* root) {
 
     assert(page_header->data == &data);
 
-    PRINT_PAGEHEADER(page_header);
+    PRINT_PAGE_HEADER(page_header);
 
     printf("Test 1 passed: PageHeader created and initialized\n");
     return true;

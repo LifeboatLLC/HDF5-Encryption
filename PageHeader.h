@@ -16,7 +16,7 @@ Root Structure of the Page Buffer
 
 #define PAGE_HEADER_SANITY_CHECK_TAG 0x6865
 #define PAGE_HEADER_SANITY_CHECK_TAG_INVALID 0x68655F
-#define PRINT_PAGEHEADER(page_header) do {                                      \
+#define PRINT_PAGE_HEADER(page_header) do {                                      \
     printf("[pageHeader]\n");                                                   \
     printf("STRUCT TAG: %d \n", (page_header)->sanity_check_tag);               \
     printf("Data: %d \n", (page_header)->data);                                 \
