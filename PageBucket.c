@@ -36,6 +36,7 @@ void prependPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_pag
 
     if (*head == NULL) {
         assert(*tail == NULL);
+        assert(*current_page_count == 0);
 
         new_page_header->hash_prev_ptr = NULL;
         new_page_header->hash_next_ptr = NULL;
@@ -47,6 +48,8 @@ void prependPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_pag
         assert(*tail != NULL);
 
     } else {
+        assert(*current_page_count > 0);
+
         new_page_header->hash_prev_ptr = NULL;
         new_page_header->hash_next_ptr = *head;
 
@@ -94,6 +97,7 @@ void appendPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page
 
     if (*tail == NULL) {
         assert(*head == NULL);
+        assert(*current_page_count == 0);
 
         new_page_header->hash_prev_ptr = NULL;
         new_page_header->hash_next_ptr = NULL;
@@ -105,6 +109,8 @@ void appendPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page
         assert(*tail != NULL);
 
     } else {
+        assert(*current_page_count > 0);
+
         new_page_header->hash_prev_ptr = *tail;
         new_page_header->hash_next_ptr = NULL;
 
@@ -159,6 +165,7 @@ void insertPageHeader(PageHeader** head, PageHeader** tail, PageHeader* insert_t
     assert(*head != NULL);
     assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
     assert(insert_target_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(*current_page_count > 0);
 
     if (insert_target_page_header == *tail) {
         new_page_header->hash_prev_ptr = *tail;
@@ -229,6 +236,7 @@ void removePageHeader(PageHeader** head, PageHeader** tail, PageHeader* page_hea
     assert(page_header != NULL);
     assert(*head != NULL && *tail != NULL);
     assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(*current_page_count > 0);
 
     if (*head == *tail) {
         assert(page_header == *head);

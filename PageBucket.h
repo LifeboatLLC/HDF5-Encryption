@@ -12,7 +12,6 @@ Linked List Utility Functions for Bucket and LRU
 #include <assert.h>
 
 #include "PageHeader.h"
-#include "RootPageBuffer.h"
 
 /*
 DESCRIPTION
@@ -38,8 +37,8 @@ CHANGELOG
     Aijun Hall, 7/17/2024
 */
 typedef struct PageBucket {
-    PageHeader* head;
-    PageHeader* tail;
+    struct PageHeader* head;
+    struct PageHeader* tail;
     signed int current_page_count;
 } PageBucket;
 

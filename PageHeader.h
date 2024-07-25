@@ -13,13 +13,14 @@ Root Structure of the Page Buffer
 #include <assert.h>
 
 #include "RootPageBuffer.h"
+#include "PageBucket.h"
 
 #define PAGE_HEADER_SANITY_CHECK_TAG 0x6865
 #define PAGE_HEADER_SANITY_CHECK_TAG_INVALID 0x68655F
 #define PRINT_PAGE_HEADER(page_header) do {                                      \
     printf("[pageHeader]\n");                                                   \
     printf("STRUCT TAG: %d \n", (page_header)->sanity_check_tag);               \
-    printf("Data: %d \n", (page_header)->data);                                 \
+    printf("Data: %u \n", (page_header)->data);                                 \
     printf("Hash Key: %d \n", (page_header)->hash_key);                         \
     printf("Page Offset Address: %d \n", (page_header)->page_offset_address);   \
     printf("HashTable Next Pointer: %p\n", (page_header)->hash_next_ptr);       \

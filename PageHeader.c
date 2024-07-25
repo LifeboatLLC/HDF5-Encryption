@@ -22,11 +22,9 @@ CHANGELOG
 */
 PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats) {
     PageHeader* new_page_header = (PageHeader*)malloc(page_size * sizeof(PageHeader));
-
-    // Allocate memory for page data separately
-    new_page_header->data = (uint8_t*)malloc(page_size);
-
     assert(new_page_header != NULL);
+
+    new_page_header->data = (uint8_t*)malloc(page_size);
     assert(new_page_header->data != NULL);
 
     // ROOT STATISTICS
@@ -115,7 +113,7 @@ void initializePageHeader(PageHeader* target_page_header, int page_offset_addres
 
 /*
 DESCRIPTION
-    Delete a PageHeader and free it from the heap.
+    Delete a PageHeader and free it to the heap.
 
 FUNCTION FIELDS
     [PageHeader*] page_header: Pointer to the PageHeader to delete

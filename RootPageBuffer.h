@@ -11,6 +11,10 @@ Root Structure of the Page Buffer
 #include <stdlib.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <string.h>
+
+#include "PageBucket.h"
+#include "PageHeader.h"
 
 #define ROOT_PAGE_BUFFER_SANITY_CHECK_TAG 0x526F
 #define ROOT_PAGE_BUFFER_SANITY_CHECK_TAG_INVALID 0x526F5F
@@ -42,6 +46,26 @@ typedef struct RootPageBufferStatistics {
 
 /*
 DESCRIPTION
+    An entry in the PageHashTable. Each entry holds its hash_key value for
+    indexing, and the entry's PageBucket.
+
+STRUCT FIELDS
+    [int] hash_key: Hash of the page, used in PageHashTable. Calculated as a
+    function of the page's memory address.
+
+    [*PageBucket] page_bucket: Pointer to the PageBucket of an entry.
+
+CHANGELOG
+    First created
+    Aijun Hall, 7/23/2024
+*/
+typedef struct PageHashTableEntry {
+    int hash_key;
+    struct PageBucket* bucket;
+} PageHashTableEntry;
+
+/*
+DESCRIPTION
     Root of the PageBuffer system.
 
     TODO: Temporary skeleton mock to just hold statistics
@@ -55,12 +79,18 @@ STRUCT FIELDS
 CHANGELOG
     First created
     Aijun Hall, 6/2/2024
+
+    Now includes PageHashTable
+    Aijun Hall, 7/23/2024
 */
 typedef struct RootPageBuffer {
     int sanity_check_tag;
-    int page_size;
+    int PAGE_SIZE;
+    int PAGE_HASH_TABLE_SIZE;
 
     RootPageBufferStatistics* stats;
+    struct PageHashTableEntry** page_hash_table[];
+
 } RootPageBuffer;
 
 void initializeRootPageBuffer(RootPageBuffer* root_page_buffer, RootPageBufferStatistics* stats);
@@ -68,7 +98,6 @@ void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats);
 void setupMockRootPageBuffer();
 void printPageHeadersAllocated(RootPageBufferStatistics* stats);
 
-bool testMallocAndInitPageHeader(RootPageBuffer* root);
 bool testAppendPageHeader(RootPageBuffer* root);
 bool testAppendPageHeaderEmpty(RootPageBuffer* root);
 bool testPrependPageHeader(RootPageBuffer* root);
@@ -76,6 +105,8 @@ bool testInsertPageHeader(RootPageBuffer* root);
 bool testDeleteHeadPageHeader(RootPageBuffer* root);
 bool testDeleteTailPageHeader(RootPageBuffer* root);
 bool testRandomBucketLength(int random_seed, RootPageBuffer* root);
+
+bool testMallocAndInitNewPageHeader(RootPageBuffer* root);
 
 void runPageBucketTests();
 
