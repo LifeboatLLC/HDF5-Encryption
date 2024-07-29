@@ -11,7 +11,7 @@ DESCRIPTION
 
 FUNCTION FIELDS
     [page_size]: Fixed page memory size
-    [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
+    [RootPageBuffer*] root: Pointer to the RootPageBuffer for stats
 
 RETURN TYPE
     [PageHeader*] new_page_header: Pointer to newly created Page Header
@@ -20,15 +20,15 @@ CHANGELOG
     First created
     Aijun Hall, 6/25/2024
 */
-PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats) {
-    PageHeader* new_page_header = (PageHeader*)malloc(page_size * sizeof(PageHeader));
+PageHeader* allocatePageHeader(RootPageBuffer* root) {
+    PageHeader* new_page_header = (PageHeader*)malloc(root->PAGE_SIZE * sizeof(PageHeader));
     assert(new_page_header != NULL);
 
-    new_page_header->data = (uint8_t*)malloc(page_size);
+    new_page_header->data = (uint8_t*)malloc(root->PAGE_SIZE);
     assert(new_page_header->data != NULL);
 
     // ROOT STATISTICS
-    (stats->page_headers_allocated)++;
+    (root->page_headers_allocated)++;
 
     return new_page_header;
 }
@@ -80,7 +80,13 @@ DESCRIPTION
     recycled ones.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
+    [PageHeader*] target_page_header: PageHeader to be initialized
+
+    [int] page_offset_address: Offset of the page address in the Buffer
+
+    [int] page_size: Fixed memory size of page.
+
+    [uint8_t*]: Pointer to the raw data of the page.
 
 RETURN TYPE
     [PageHeader*] new_page_header: Pointer to newly created Page Header
@@ -125,7 +131,7 @@ CHANGELOG
     First created
     Aijun Hall, 6/26/2024
 */
-void deletePageHeader(PageHeader* page_header, RootPageBufferStatistics* stats) {
+void deletePageHeader(PageHeader* page_header, RootPageBuffer* root) {
     assert(page_header != NULL);
 
     page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG_INVALID;
@@ -134,7 +140,7 @@ void deletePageHeader(PageHeader* page_header, RootPageBufferStatistics* stats) 
     page_header->data = NULL;
 
     // ROOT STATISTICS
-    (stats->page_headers_deleted)++;
+    (root->page_headers_deleted)++;
 
     free(page_header->data);
     free(page_header);
@@ -467,31 +473,6 @@ void walkAndAssertBucket(PageHeader** head, PageHeader** tail, signed int* curre
 
 /*
 DESCRIPTION
-    Initialize fields of a freshly allocated RootPageBufferStatistics. Used as
-    a helper function during RootPageBuffer initialization.
-
-    TODO: Temporary skeletal mock just to hold PageBucket stats.
-
-FUNCTION FIELDS
-    [RootPageBufferStatistics*] stats: Pointer to RootPageBufferStatistics to
-    initialize.
-
-RETURN TYPE
-    [void]
-
-CHANGELOG
-    First created
-    Aijun Hall, 6/2/2024
-*/
-void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats) {
-    assert(stats != NULL);
-
-    stats->page_headers_allocated = 0;
-    stats->page_headers_deleted = 0;
-}
-
-/*
-DESCRIPTION
     Initialize fields of a PageHashTable for use in the RootPageBuffer structure.
 
 FUNCTION FIELDS
@@ -529,9 +510,6 @@ FUNCTION FIELDS
 RETURN TYPE
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
 
-    [RootPageBufferStatistics*] stats: Pointer to RootPageBufferStatistics to
-    initialize.
-
 CHANGELOG
     First created
     Aijun Hall, 6/5/2024
@@ -540,23 +518,22 @@ CHANGELOG
     Aijun Hall, 6/6/2024
 
 */
-void setupMockRootPageBuffer(RootPageBuffer* root, RootPageBufferStatistics* stats) {
+void setupMockRootPageBuffer(RootPageBuffer* root) {
     assert(root != NULL);
-    assert(stats != NULL);
-
-    initializeRootPageBufferStatistics(stats);
 
     root->sanity_check_tag = ROOT_PAGE_BUFFER_SANITY_CHECK_TAG;
-    root->PAGE_SIZE = 4096; // #TODO HARDCODED PAGE SIZE
+    root->PAGE_SIZE = 4096;
     root->PAGE_HASH_TABLE_SIZE = 16;
-    // root->page_hash_table = #TODO initialize hash table
-    root->stats = stats;
+
+    // STATS
+    root->page_headers_allocated = 0;
+    root->page_headers_deleted = 0;
 }
 
 /*
 DESCRIPTION
     Helper Function for Testing. Print PageHeaders Allocated Stat from the
-    RootPageBufferStatistics.
+    RootPageBuffer.
 
 FUNCTION FIELDS
     [RootPageBuffer*] root: Pointer to the mock root page buffer.
@@ -571,9 +548,9 @@ CHANGELOG
     Adapted to remove Node and directly use PageHeaders
     Aijun Hall, 7/18/2024
 */
-void printPageHeadersAllocated(RootPageBufferStatistics* stats) {
-    assert(stats != NULL);
-    printf("PageHeaders Allocated: %d\n", stats->page_headers_allocated);
+void printPageHeadersAllocated(RootPageBuffer* root) {
+    assert(root != NULL);
+    printf("PageHeaders Allocated: %d\n", root->page_headers_allocated);
 }
 
 /*
@@ -598,7 +575,7 @@ bool testAppendPageHeaderToEmptyBucket(RootPageBuffer* root) {
     int expected_values[] = {10};
 
     uint8_t data = 10;
-    PageHeader* page_header = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header = allocatePageHeader(root);
 
     initializePageHeader(page_header, 0x4080, root->PAGE_SIZE, &data);
 
@@ -647,11 +624,11 @@ bool testAppendPageHeader(RootPageBuffer* root) {
     int expected_values[] = {10, 20};
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
     uint8_t data1 = 20;
-    PageHeader* page_header1 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header1 = allocatePageHeader(root);
     initializePageHeader(page_header1, 0x4080, root->PAGE_SIZE, &data1);
 
     PageBucket bucket;
@@ -703,11 +680,11 @@ bool testPrependPageHeader(RootPageBuffer* root) {
     int expected_values[] = {20, 10};
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
     uint8_t data1 = 20;
-    PageHeader* page_header1 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header1 = allocatePageHeader(root);
     initializePageHeader(page_header1, 0x4080, root->PAGE_SIZE, &data1);
 
     PageBucket bucket;
@@ -759,19 +736,19 @@ bool testInsertPageHeader(RootPageBuffer* root) {
     int expected_values[] = {10, 40, 20, 30};
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
     uint8_t data1 = 20;
-    PageHeader* page_header1 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header1 = allocatePageHeader(root);
     initializePageHeader(page_header1, 0x4080, root->PAGE_SIZE, &data1);
 
     uint8_t data2 = 30;
-    PageHeader* page_header2 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header2 = allocatePageHeader(root);
     initializePageHeader(page_header2, 0x4080, root->PAGE_SIZE, &data2);
 
     uint8_t data3 = 40;
-    PageHeader* page_header3 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header3 = allocatePageHeader(root);
     initializePageHeader(page_header3, 0x4080, root->PAGE_SIZE, &data3);
 
     PageBucket bucket;
@@ -824,7 +801,7 @@ bool testDeleteHeadPageHeader(RootPageBuffer* root) {
     int expected_setup[] = {10};
 
     uint8_t data = 10;
-    PageHeader* page_header = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header = allocatePageHeader(root);
     initializePageHeader(page_header, 0x4080, root->PAGE_SIZE, &data);
 
     PageBucket bucket;
@@ -875,11 +852,11 @@ bool testDeleteTailPageHeader(RootPageBuffer* root) {
     int expected_values[] = {10};
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
     uint8_t data1 = 20;
-    PageHeader* page_header1 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header1 = allocatePageHeader(root);
     initializePageHeader(page_header1, 0x4080, root->PAGE_SIZE, &data1);
 
     PageBucket bucket;
@@ -932,15 +909,15 @@ bool testDeleteMiddlePageHeader(RootPageBuffer* root) {
     int expected_values[] = {10, 30};
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
     uint8_t data1 = 20;
-    PageHeader* page_header1 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header1 = allocatePageHeader(root);
     initializePageHeader(page_header1, 0x4080, root->PAGE_SIZE, &data1);
 
     uint8_t data2 = 30;
-    PageHeader* page_header2 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header2 = allocatePageHeader(root);
 
     initializePageHeader(page_header2, 0x4080, root->PAGE_SIZE, &data2);
 
@@ -1009,7 +986,7 @@ bool testRandomBucketLength(int random_seed, RootPageBuffer* root) {
     srand(random_seed);
 
     uint8_t data0 = 10;
-    PageHeader* page_header0 = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header0 = allocatePageHeader(root);
 
     initializePageHeader(page_header0, 0x4080, root->PAGE_SIZE, &data0);
 
@@ -1025,7 +1002,7 @@ bool testRandomBucketLength(int random_seed, RootPageBuffer* root) {
         int random = rand();
 
         uint8_t data = i;
-        PageHeader* page_header = allocatePageHeader(root->PAGE_SIZE, root->stats);
+        PageHeader* page_header = allocatePageHeader(root);
 
         initializePageHeader(page_header, 0x4080, root->PAGE_SIZE, &data);
 
@@ -1068,13 +1045,12 @@ CHANGELOG
     Aijun Hall, 6/3/2024
 */
 void runPageBucketTests() {
-    RootPageBufferStatistics stats;
     RootPageBuffer root;
 
     // #TODO this should initialize the root hash table as well- so bucket
     // DDL functions can point directly to the root and index the hash entry
     // needed instead of using the bucket head and tail pointer like right now.
-    setupMockRootPageBuffer(&root, &stats);
+    setupMockRootPageBuffer(&root);
 
     printf("\nRunning Page Bucket Tests...\n");
 
@@ -1106,7 +1082,7 @@ void runPageBucketTests() {
     // assert(testRandomBucketLength(RANDOM_SEED, &root) == true);
 
     printf("Root Stats:\n");
-    printPageHeadersAllocated(&stats);
+    printPageHeadersAllocated(&root);
 }
 
 /*
@@ -1116,7 +1092,7 @@ DESCRIPTION
     freshly initializing a recycled PageHeader below.
 
 FUNCTION FIELDS
-    [RootPageBufferStatistics* root] Pointer to Root, so that we can access
+    [RootPageBuffer* root] Pointer to Root, so that we can access
     the set page size.
 
 RETURN TYPE
@@ -1131,7 +1107,7 @@ CHANGELOG
     Aijun Hall, 7/25/2024
 */
 bool testMallocAndInitNewPageHeader(RootPageBuffer* root) {
-    PageHeader* page_header = allocatePageHeader(root->PAGE_SIZE, root->stats);
+    PageHeader* page_header = allocatePageHeader(root);
     assert(page_header != NULL);
 
     // Allocate an array of len 10, with integers 1,2,3...10
@@ -1186,9 +1162,8 @@ CHANGELOG
     Aijun Hall, 6/24/2024
 */
 void runPageHeaderTests() {
-    RootPageBufferStatistics stats;
     RootPageBuffer root;
-    setupMockRootPageBuffer(&root, &stats);
+    setupMockRootPageBuffer(&root);
 
     printf("\nRunning Page Header Tests...\n");
 

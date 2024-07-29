@@ -36,31 +36,6 @@ Root Structure of the Page Buffer
 
 /*
 DESCRIPTION
-    All statistics associated with the PageBuffer are stored here for ease of
-    access. Stores a variety of statistics associated with individual
-    datastructures within the RootPageBuffer.
-
-    TODO: Temporary skeleton mock with just arbritrary BucketNode statistics
-    for now to represent how future statistics are stored.
-
-STRUCT FIELDS
-    [unsigned int] bucket_nodes_allocated: Number of BucketNodes that have been
-    dynamically allocated on the heap.
-
-    [unsigned int] bucket_nodes_deleted: Number of BucketNodes that have been
-    deleted.
-
-CHANGELOG
-    First created
-    Aijun Hall, 6/2/2024
-*/
-typedef struct RootPageBufferStatistics {
-    signed int page_headers_allocated;
-    signed int page_headers_deleted;
-} RootPageBufferStatistics;
-
-/*
-DESCRIPTION
     An entry in the PageHashTable. Each entry holds its hash_key value for
     indexing, and the entry's PageBucket.
 
@@ -88,8 +63,22 @@ DESCRIPTION
 STRUCT FIELDS
     [int] sanity_check_tag: Struct tag used for error checking.
 
-    [RootPageBufferStatistics*] root_page_buffer_statistics: Pointer to the
-    RootPageBuffer statistics.
+    [int] PAGE_SIZE: Fixed memory size of a Page. Assumed to be a power of 2 to
+    work with calculatePageHeaderHashKey.
+
+    [int] PAGE_HASH_TABLE_SIZE: Fixed size of the HashTable used to index
+    PageHeaders in PageBuckets. Assumed to be a power of 2 to work with
+    calculatePageHeaderHashKey
+
+    [int] page_headers_allocated: Number of total PageHeaders allocated during
+    the lifespan of the RootPageBuffer
+
+    [int] page_headers_deleted: Number of total PageHeaders deleted during the
+    lifespan of the RootPageBuffer
+
+    [PageHashTableEntry**] page_hash_table[]: Pointer to the hashtable. Each
+    Entry consists of a hash calculated from calculatePageHeaderHashKey(), and
+    a PageBucket that holds PageHeaders.
 
 CHANGELOG
     First created
@@ -97,21 +86,28 @@ CHANGELOG
 
     Now includes PageHashTable
     Aijun Hall, 7/23/2024
+
+    Removed RootPageBufferStats struct and put stats directly into the
+    RootPageBuffer
+    Aijun Hall, 7/28/2024
 */
 typedef struct RootPageBuffer {
     int sanity_check_tag;
     int PAGE_SIZE;
     int PAGE_HASH_TABLE_SIZE;
 
-    RootPageBufferStatistics* stats;
+    // STATISTICS
+    int page_headers_allocated;
+    int page_headers_deleted;
+
+    // HASHTABLE
     struct PageHashTableEntry** page_hash_table[];
 
 } RootPageBuffer;
 
-void initializeRootPageBuffer(RootPageBuffer* root_page_buffer, RootPageBufferStatistics* stats);
-void initializeRootPageBufferStatistics(RootPageBufferStatistics* stats);
+void initializeRootPageBuffer(RootPageBuffer* root);
 void setupMockRootPageBuffer();
-void printPageHeadersAllocated(RootPageBufferStatistics* stats);
+void printPageHeadersAllocated(RootPageBuffer* root);
 
 bool testAppendPageHeader(RootPageBuffer* root);
 bool testAppendPageHeaderEmpty(RootPageBuffer* root);
@@ -120,7 +116,6 @@ bool testInsertPageHeader(RootPageBuffer* root);
 bool testDeleteHeadPageHeader(RootPageBuffer* root);
 bool testDeleteTailPageHeader(RootPageBuffer* root);
 bool testRandomBucketLength(int random_seed, RootPageBuffer* root);
-
 bool testMallocAndInitNewPageHeader(RootPageBuffer* root);
 void runPageBucketTests();
 
@@ -189,7 +184,7 @@ typedef struct PageHeader {
     uint8_t* data;
 } PageHeader;
 
-PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats);
+PageHeader* allocatePageHeader(RootPageBuffer* root);
 void initializePageHeader(PageHeader* target_page_header, int page_offset_address, int page_size, uint8_t* data);
 int calculatePageHeaderHashKey(int page_offset_address, int page_size);
 
