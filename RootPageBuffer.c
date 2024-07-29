@@ -4,8 +4,466 @@ Root Structure of the Page Buffer
 */
 
 #include "RootPageBuffer.h"
-#include "PageBucket.h"
-#include "PageHeader.h"
+
+/*
+DESCRIPTION
+    Allocate memory for PageHeader
+
+FUNCTION FIELDS
+    [page_size]: Fixed page memory size
+    [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
+
+RETURN TYPE
+    [PageHeader*] new_page_header: Pointer to newly created Page Header
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/25/2024
+*/
+PageHeader* allocatePageHeader(int page_size, RootPageBufferStatistics* stats) {
+    PageHeader* new_page_header = (PageHeader*)malloc(page_size * sizeof(PageHeader));
+    assert(new_page_header != NULL);
+
+    new_page_header->data = (uint8_t*)malloc(page_size);
+    assert(new_page_header->data != NULL);
+
+    // ROOT STATISTICS
+    (stats->page_headers_allocated)++;
+
+    return new_page_header;
+}
+
+/*
+DESCRIPTION
+    Hashkey function. Change a PageHeader address to a hashkey to be used in
+    the PageHashTable.
+
+    Operation Sequence:
+    1. Clip off number of bits equal to the power of 2 in page size
+    2. Right Shift by that number of bits
+    3. Bit AND operation with size of hashtable - 1
+
+FUNCTION FIELDS
+    [int] page_offset_address: Page offset address to change into hashkey
+    [int] page_size: Fixed page memory size
+
+RETURN TYPE
+    [int] hashkey: Calculated and converted hashkey
+
+CHANGELOG
+    First created
+    Aijun Hall, 7/12/2024
+*/
+int calculatePageHeaderHashKey(int page_offset_address, int page_size) {
+    // Calculate the number of bits to shift based on the page size
+    // Assume page size is a power of 2)
+    assert(page_size % 2 == 0);
+
+    int bits_to_shift = 0;
+    int temp_page_size = page_size;
+
+    while (temp_page_size > 1) {
+        temp_page_size >>= 1;
+        bits_to_shift++;
+    }
+
+    // Clip off the bits, right shift, and perform the bit AND operation
+    int shifted_address = page_offset_address >> bits_to_shift;
+    int hashkey = shifted_address & (page_size - 1);
+
+    return hashkey;
+}
+
+/*
+DESCRIPTION
+    Initialize Allocated PageHeader. Used for newly allocated PageHeaders, and
+    recycled ones.
+
+FUNCTION FIELDS
+    [RootPageBufferStatistics*] stats: Pointer to the RootPageBuffer statistics
+
+RETURN TYPE
+    [PageHeader*] new_page_header: Pointer to newly created Page Header
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/26/2024
+*/
+void initializePageHeader(PageHeader* target_page_header, int page_offset_address, int page_size, uint8_t* data) {
+    assert(target_page_header != NULL);
+    assert(data >= 0);
+
+    target_page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG;
+
+    target_page_header->page_offset_address = page_offset_address;
+    target_page_header->hash_key = calculatePageHeaderHashKey(page_offset_address, page_size);
+
+    target_page_header->hash_next_ptr = NULL;
+    target_page_header->hash_prev_ptr = NULL;
+    target_page_header->rp_next_ptr = NULL;
+    target_page_header->rp_prev_ptr = NULL;
+
+    target_page_header->is_dirty = false;
+    target_page_header->is_busy = false;
+    target_page_header->is_read = false;
+    target_page_header->is_write = false;
+
+    target_page_header->data = data;
+}
+
+/*
+DESCRIPTION
+    Delete a PageHeader and free it to the heap.
+
+FUNCTION FIELDS
+    [PageHeader*] page_header: Pointer to the PageHeader to delete
+
+RETURN TYPE
+    [PageHeader*] new_page_header: Pointer to newly created Page Header
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/26/2024
+*/
+void deletePageHeader(PageHeader* page_header, RootPageBufferStatistics* stats) {
+    assert(page_header != NULL);
+
+    page_header->sanity_check_tag = PAGE_HEADER_SANITY_CHECK_TAG_INVALID;
+
+    // Free the allocated page data
+    page_header->data = NULL;
+
+    // ROOT STATISTICS
+    (stats->page_headers_deleted)++;
+
+    free(page_header->data);
+    free(page_header);
+}
+
+/*
+DESCRIPTION
+    Prepend a PageHeader to a given Bucket. Pointer operations to handle new
+    head are handled within this function.
+
+FUNCTION FIELDS
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
+
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
+
+    [PageHeader*] new_page_header: Pointer to the PageHeader to prepend.
+
+    [signed int*] current_page_count: Pointer to the current count of
+    PageHeaders in the Bucket
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void prependPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+
+    if (*head == NULL) {
+        assert(*tail == NULL);
+        assert(*current_page_count == 0);
+
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = NULL;
+
+        *head = new_page_header;
+        *tail = new_page_header;
+
+        assert(*head != NULL);
+        assert(*tail != NULL);
+
+    } else {
+        assert(*current_page_count > 0);
+
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = *head;
+
+        assert((*head)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*head)->hash_prev_ptr = new_page_header;
+        *head = new_page_header;
+
+        assert(*head != NULL);
+        assert((*head)->hash_prev_ptr == NULL);
+    }
+
+    assert(*head != NULL);
+    assert(*tail != NULL);
+    (*current_page_count)++;
+}
+
+/*
+DESCRIPTION
+    Append a PageHeader to a given Bucket. Pointer operations are handled within
+    this function.
+
+FUNCTION FIELDS
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
+
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
+
+    [PageHeader*] new_page_header: Pointer to the PageHeader to append.
+
+    [signed int*] current_page_count: Pointer to the current count of
+    PageHeaders in the Bucket
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void appendPageHeader(PageHeader** head, PageHeader** tail, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+
+    if (*tail == NULL) {
+        assert(*head == NULL);
+        assert(*current_page_count == 0);
+
+        new_page_header->hash_prev_ptr = NULL;
+        new_page_header->hash_next_ptr = NULL;
+
+        *head = new_page_header;
+        *tail = new_page_header;
+
+        assert(*head != NULL);
+        assert(*tail != NULL);
+
+    } else {
+        assert(*current_page_count > 0);
+
+        new_page_header->hash_prev_ptr = *tail;
+        new_page_header->hash_next_ptr = NULL;
+
+        assert((*tail)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*tail)->hash_next_ptr = new_page_header;
+        *tail = new_page_header;
+
+        assert(*tail != NULL);
+        assert((*tail)->hash_next_ptr == NULL);
+    }
+
+    assert(*head != NULL);
+    assert(*tail != NULL);
+    (*current_page_count)++;
+}
+
+/*
+DESCRIPTION
+    Insert a PageHeader in a given Bucket via its head and tail pointer, relative to
+    an insert target PageHeader. Note that insert will always be an appending action.
+    Pointer operations to handle the insertion are handled within this function.
+
+FUNCTION FIELDS
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
+
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
+
+    [PageHeader*] insert_target_page_header: Pointer to the PageHeader to insert
+    relative to.
+
+    [PageHeader*] new_page_header: Pointer to the PageHeader to insert.
+
+    [signed int*] current_page_count: Pointer to the current count of pages in the Bucket.
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/5/2024
+
+    Removed check for (head == NULL) case. insertNode() should not be used on
+    empty bucket.
+    Aijun Hall, 6/12/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void insertPageHeader(PageHeader** head, PageHeader** tail, PageHeader* insert_target_page_header, PageHeader* new_page_header, signed int* current_page_count) {
+    assert(new_page_header != NULL);
+    assert(insert_target_page_header != NULL);
+    assert(*head != NULL);
+    assert(new_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(insert_target_page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(*current_page_count > 0);
+
+    if (insert_target_page_header == *tail) {
+        new_page_header->hash_prev_ptr = *tail;
+        new_page_header->hash_next_ptr = NULL;
+
+        assert((*tail)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+        (*tail)->hash_next_ptr = new_page_header;
+        *tail = new_page_header;
+
+        assert(*tail != NULL);
+        assert((*tail)->hash_next_ptr == NULL);
+    } else {
+        new_page_header->hash_prev_ptr = insert_target_page_header;
+        new_page_header->hash_next_ptr = insert_target_page_header->hash_next_ptr;
+
+        if (insert_target_page_header->hash_next_ptr != NULL) {
+            assert((insert_target_page_header->hash_next_ptr)->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+            insert_target_page_header->hash_next_ptr->hash_prev_ptr = new_page_header;
+        }
+
+        insert_target_page_header->hash_next_ptr = new_page_header;
+
+        if (insert_target_page_header == *tail) {
+            *tail = new_page_header;
+        }
+
+        assert(*tail != NULL);
+        assert((*tail)->hash_next_ptr == NULL);
+    }
+
+    (*current_page_count)++;
+}
+
+
+/*
+DESCRIPTION
+    Delete a PageHeader from a Bucket via it's head and tail pointer.
+    Pointer operations to handle changing head, tail, or inbetween pointers are
+    handled within this function.
+
+FUNCTION FIELDS
+    [PageHeader**] head: Double pointer to the head PageHeader of a Bucket.
+
+    [PageHeader**] tail: Double pointer to the tail PageHeader of a Bucket.
+
+    [PageHeader*] page_header: Pointer to the PageHeader to delete.
+
+    [int*] current_page_count: Pointer to the current count of pages in the Bucket
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/3/2024
+
+    Refactored to make more simple. Now only check for 2 conditions:
+    - if head == tail, then only 1 node in bucket.
+    - else at least 2 nodes in bucket.
+    Aijun Hall, 6/12/2024
+
+    Adapted to remove Node struct and use PageHeaders directly.
+    Renamed to "removePageHeader" from "deletePageHeader" since freeing the
+    memory is no longer synonomous with Bucket removal.
+    Aijun Hall, 7/17/2024
+*/
+void removePageHeader(PageHeader** head, PageHeader** tail, PageHeader* page_header, signed int* current_page_count) {
+    assert(page_header != NULL);
+    assert(*head != NULL && *tail != NULL);
+    assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(*current_page_count > 0);
+
+    if (*head == *tail) {
+        assert(page_header == *head);
+
+        *head = NULL;
+        *tail = NULL;
+    } else {
+        if (page_header == *head) {
+            *head = page_header->hash_next_ptr;
+            (*head)->hash_prev_ptr = NULL;
+
+        } else if (page_header == *tail) {
+            *tail = page_header->hash_prev_ptr;
+            (*tail)->hash_next_ptr = NULL;
+
+        } else {
+            page_header->hash_prev_ptr->hash_next_ptr = page_header->hash_next_ptr;
+            page_header->hash_next_ptr->hash_prev_ptr = page_header->hash_prev_ptr;
+
+        }
+    }
+
+    (*current_page_count)--;
+}
+
+/*
+DESCRIPTION
+    Debugging function to print the current state of a bucket. Prints each
+    PageHeader using PRINT_NODE macro defined at the top of this file, and then
+    the bucket length.
+
+FUNCTION FIELDS
+    [PageBucket*] bucket: Pointer to the bucket to print.
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/3/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void printBucket(PageBucket* bucket) {
+    PageHeader* current = bucket->head;
+
+    while (current != NULL) {
+        PRINT_PAGE_HEADER(current);
+        current = current->hash_next_ptr;
+    };
+
+    printf("[LENGTH]\n%d\n", bucket->current_page_count);
+}
+
+/*
+DESCRIPTION
+    Helper Function for Testing. Walk through a Bucket with a given array of
+    values, and assert that each node's data is correct according to the
+    expected array values.
+
+FUNCTION FIELDS
+    [int[]] Array of integers that hold the expected values
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 6/18/2024
+
+    Adapted to remove Node struct and use PageHeaders directly
+    Aijun Hall, 7/17/2024
+*/
+void walkAndAssertBucket(PageHeader** head, PageHeader** tail, signed int* current_page_count, int *expected_values) {
+    PageHeader* current = (*head);
+
+    assert((*head)->hash_prev_ptr == NULL);
+
+    for (int i=0;i<(*current_page_count);i++) {
+        assert(current->data[0] == expected_values[i]);
+
+        if (i == *(current_page_count)) {
+            assert(current->hash_prev_ptr == (*tail));
+        } else {
+            current = current->hash_next_ptr;
+        }
+
+    }
+
+    assert(current == NULL);
+}
 
 /*
 DESCRIPTION
@@ -47,10 +505,8 @@ CHANGELOG
     First created
     Aijun Hall, 7/23/2024
 */
-void initializePageHashTable(PageHashTableEntry* page_hash_table, int PAGE_HASH_TABLE_SIZE) {
-    assert(page_hash_table != NULL);
-
-    page_hash_table = (PageHashTableEntry**)malloc(PAGE_HASH_TABLE_SIZE * sizeof(PAGE_HASH_TABLE_SIZE*));
+PageHashTableEntry** initializePageHashTable(int PAGE_HASH_TABLE_SIZE) {
+    PageHashTableEntry** page_hash_table = (PageHashTableEntry**)malloc(PAGE_HASH_TABLE_SIZE * sizeof(PageHashTableEntry*));
 
     for (int i = 0; i < PAGE_HASH_TABLE_SIZE; i++) {
         page_hash_table[i] = (PageHashTableEntry*)malloc(sizeof(PageHashTableEntry));
@@ -58,6 +514,8 @@ void initializePageHashTable(PageHashTableEntry* page_hash_table, int PAGE_HASH_
         page_hash_table[i]->hash_key = 0;
         page_hash_table[i]->bucket = NULL;
     }
+
+    return page_hash_table;
 }
 
 /*
