@@ -532,6 +532,27 @@ void setupMockRootPageBuffer(RootPageBuffer* root) {
 
 /*
 DESCRIPTION
+    Utility function to reset RootPageBuffer stats. Resets all stats at once.
+
+FUNCTION FIELDS
+    N/A
+
+RETURN TYPE
+    [RootPageBuffer*] root: Pointer to the mock root page buffer.
+
+CHANGELOG
+    First created
+    Aijun Hall, 7/29/2024
+*/
+void resetMockRootPageBufferStatistics(RootPageBuffer* root) {
+    assert(root != NULL);
+
+    root->page_headers_allocated = 0;
+    root->page_headers_deleted = 0;
+}
+
+/*
+DESCRIPTION
     Helper Function for Testing. Print PageHeaders Allocated Stat from the
     RootPageBuffer.
 
@@ -1110,22 +1131,10 @@ bool testMallocAndInitNewPageHeader(RootPageBuffer* root) {
     PageHeader* page_header = allocatePageHeader(root);
     assert(page_header != NULL);
 
-    // Allocate an array of len 10, with integers 1,2,3...10
-    // Memcpy this into page data and verify
-    int *expected_data_array = (int*)malloc(10*sizeof(int));
+    int expected_hash_key = 5;
+    int expected_page_offset_address = root->PAGE_SIZE * 5;
 
-    for (int i=0;i<10;i++) {
-        expected_data_array[i] = i + 1;
-    }
-
-    uint8_t *expected_page_header_data = (uint8_t*)malloc(10 * sizeof(uint8_t));
-
-    memcpy(expected_page_header_data, expected_data_array, 10 * sizeof(uint8_t));
-
-    int expected_hash_key = 4;
-    int expected_page_offset_address = 0x4080;
-
-    initializePageHeader(page_header, expected_page_offset_address, root->PAGE_SIZE, expected_page_header_data);
+    initializePageHeader(page_header, expected_page_offset_address, root->PAGE_SIZE, "10");
 
     assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
     assert(page_header->page_offset_address == expected_page_offset_address);
@@ -1141,9 +1150,69 @@ bool testMallocAndInitNewPageHeader(RootPageBuffer* root) {
     assert(page_header->is_read == false);
     assert(page_header->is_write == false);
 
-    assert(page_header->data == expected_page_header_data);
+    assert(page_header->data != NULL);
 
     printf("Test 1 passed: PageHeader created and initialized\n");
+    return true;
+}
+
+/*
+DESCRIPTION
+    Unit Test for verifying PageHeader data field. Ensure data is written
+    and read correctly using file operations
+
+FUNCTION FIELDS
+    N/A
+
+RETURN TYPE
+    [void]
+
+CHANGELOG
+    First created
+    Aijun Hall, 7/28/2024
+*/
+bool testPageHeaderData (RootPageBuffer* root) {
+    PageHeader* page_header = allocatePageHeader(root);
+    assert(page_header != NULL);
+
+    int expected_hash_key = 5;
+    int expected_page_offset_address = root->PAGE_SIZE * 5;
+
+    uint8_t data0;
+    FILE *file1 = fopen("OnePageTestData.txt", "r");
+    assert (file1 != NULL);
+    fread(&data0, sizeof(uint8_t), 1, file1);
+    fclose(file1);
+
+    initializePageHeader(page_header, expected_page_offset_address, root->PAGE_SIZE, &data0);
+
+    assert(page_header->sanity_check_tag == PAGE_HEADER_SANITY_CHECK_TAG);
+    assert(page_header->page_offset_address == expected_page_offset_address);
+    assert(page_header->hash_key == expected_hash_key);
+
+    assert(page_header->hash_next_ptr == NULL);
+    assert(page_header->hash_prev_ptr == NULL);
+    assert(page_header->rp_next_ptr == NULL);
+    assert(page_header->rp_prev_ptr == NULL);
+
+    assert(page_header->is_dirty == false);
+    assert(page_header->is_busy == false);
+    assert(page_header->is_read == false);
+    assert(page_header->is_write == false);
+
+    uint8_t data1;
+    FILE *file2 = fopen("OnePageTestData.txt", "r");
+    assert(file2 != NULL);
+    fread(&data1, sizeof(uint8_t), 1, file2);
+    fclose(file2);
+
+    printf("\n%u\n", &data0);
+    printf("\n%u\n", &data1);
+    fflush(stdout);
+
+    assert(page_header->data == &data1);
+
+    printf("Test 2 passed: PageHeader data successfully created and read\n");
     return true;
 }
 
@@ -1172,6 +1241,10 @@ void runPageHeaderTests() {
 
     // Test 1: Malloc and Init a fresh pageHeader
     assert(testMallocAndInitNewPageHeader(&root) == true);
+
+    // Test 2: Malloc and Init a fresh pageHeader. Load and assert data from
+    // ./OnePageTestData.txt
+    assert(testPageHeaderData(&root) == true);
 }
 
 int main() {
