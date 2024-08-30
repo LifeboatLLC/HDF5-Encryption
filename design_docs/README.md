@@ -1,1 +1,1 @@
-This directory contains design documents for HDF5 data encryption feature
+This directory contains design documents for the HDF5 data encryption feature
