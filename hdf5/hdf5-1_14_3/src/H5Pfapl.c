@@ -45,6 +45,8 @@
 #include "H5FDlog.h"
 #include "H5FDfamily.h"
 #include "H5FDmulti.h"
+#include "H5FDpb.h"    /* page buffer -- converts random I/O to paged I/O */
+#include "H5FDcrypt.h" /* encryption VFD -- encrypts / decrypts paged I/O */
 #include "H5FDstdio.h" /* Standard C buffered I/O                  */
 #include "H5FDsplitter.h"
 #ifdef H5_HAVE_PARALLEL
