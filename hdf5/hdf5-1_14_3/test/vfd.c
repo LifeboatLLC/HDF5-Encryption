@@ -15,6 +15,7 @@
  */
 
 #include "h5test.h"
+#include <gcrypt.h>
 
 #define KB            1024U
 #define FAMILY_NUMBER 4
@@ -60,6 +61,8 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
                                  "splitter.log",         /*13*/
                                  "ctl_file",             /*14*/
                                  "ctl_splitter_wo_file", /*15*/
+                                 "pb_test_file",         /*16*/
+                                 "crypt_test_file",      /*17*/
                                  NULL};
 
 #define LOG_FILENAME "log_vfd_out.log"
@@ -67,6 +70,12 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
 #define COMPAT_BASENAME       "family_v16"
 #define MULTI_COMPAT_BASENAME "multi_file_v16"
 #define SPLITTER_DATASET_NAME "dataset"
+
+#define PB_DS_SIZE 8
+#define PB_DATASET_NAME "dataset"
+
+#define CRYPT_DS_SIZE 8
+#define CRYPT_DATASET_NAME "dataset"
 
 /* Macro: HEXPRINT()
  * Helper macro to pretty-print hexadecimal output of a buffer of known size.
@@ -148,6 +157,28 @@ struct splitter_dataset_def {
     int            n_dims;      /* rank */
 };
 
+/* Helper structure to pass around dataset information in page buffer VFD tests.
+ */
+struct pb_dataset_def {
+    void          *buf;         /* contents of dataset */
+    const char    *dset_name;   /* dataset name, always added to root group */
+    hid_t          mem_type_id; /* datatype */
+    const hsize_t *dims;        /* dimensions */
+    int            n_dims;      /* rank */
+};
+
+/* Helper structure to pass around dataset information in encryption VFD tests.
+ */
+struct crypt_dataset_def {
+    void          *buf;         /* contents of dataset */
+    const char    *dset_name;   /* dataset name, always added to root group */
+    hid_t          mem_type_id; /* datatype */
+    const hsize_t *dims;        /* dimensions */
+    int            n_dims;      /* rank */
+};
+
+
+
 /* Op code type enum for ctl callback test */
 typedef enum {
     CTL_OPC_KNOWN_PASSTHROUGH, /* op code known to passthrough VFD */
@@ -164,6 +195,40 @@ static int run_splitter_test(const struct splitter_dataset_def *data, bool ignor
 static int splitter_RO_test(const struct splitter_dataset_def *data, hid_t child_fapl_id);
 static int splitter_tentative_open_test(hid_t child_fapl_id);
 static int file_exists(const char *filename, hid_t fapl_id);
+
+static int compare_pb_config_info(hid_t fapl_id, H5FD_pb_vfd_config_t *info);
+static int run_pb_test(const struct pb_dataset_def *data, const hid_t sub_fapl_id);
+static int pb_RO_test(const struct pb_dataset_def *data, hid_t child_fapl_id);
+static int pb_create_single_file_at(const char *filename, hid_t fapl_id, const struct pb_dataset_def *data);
+static int pb_compare_expected_data(hid_t file_id, const struct pb_dataset_def *data);
+static int pb_test_create_write_read(void);
+static int pb_test_head_middle_tail(void);
+static int pb_test_rp_eviction_and_invalidation(void);
+static int pb_test_page_combinations(void);
+static int pb_test_specific_cases(void);
+static herr_t test_pb(void);
+
+static int compare_crypt_config_info(hid_t fapl_id, H5FD_crypt_vfd_config_t *info);
+static int test_crypt_fapl(void);
+static int crypt_test_create(void);
+static int crypt_test_create_and_write(void);
+static int crypt_test_verify_create_and_encryption(void);
+static int crypt_test_write_2pages(void);
+static int crypt_test_write_3pages(void);
+static int crypt_test_write_15pages(void);
+static int crypt_test_write_16pages(void);
+static int crypt_test_write_17pages(void);
+static int crypt_test_write_18pages(void);
+static int crypt_test_write_32pages(void);
+static int crypt_test_write_33pages(void);
+static int crypt_test_create_and_write_twofish(void);
+static int crypt_test_verify_create_and_encryption_twofish(void);
+static int crypt_test_write_17pages_twofish(void);
+static int run_crypt_test(const struct crypt_dataset_def *data, const hid_t sub_fapl_id);
+static int crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id);
+static int crypt_create_single_file_at(const char *filename, hid_t fapl_id, const struct crypt_dataset_def *data);
+static int crypt_compare_expected_data(hid_t file_id, const struct crypt_dataset_def *data);
+static herr_t test_crypt(void);
 
 static herr_t  run_ctl_test(uint64_t op_code, uint64_t flags, ctl_test_opc_type opc_type, hid_t fapl_id);
 static H5FD_t *H5FD__ctl_test_vfd_open(const char *name, unsigned flags, hid_t fapl_id, haddr_t maxaddr);
@@ -3433,6 +3498,4901 @@ error:
 
 #undef SPLITTER_TEST_FAULT
 
+#if 1 /* page buffer VFD test code */
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ * Macro: PB_TEST_FAULT()
+ *
+ * utility macro, helps create stack-like backtrace on error.
+ * requires defined in the calling function:
+ *    * variable `int ret_value` (return -1 on error)`
+ *    * label `done` for exit on fault
+ * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ */
+#define PB_TEST_FAULT(mesg)                                                                            \
+    do {                                                                                               \
+        H5_FAILED();                                                                                   \
+        AT();                                                                                          \
+        fprintf(stderr, mesg);                                                                         \
+        H5Eprint2(H5E_DEFAULT, stderr);                                                                \
+        fflush(stderr);                                                                                \
+        ret_value = -1;                                                                                \
+        goto done;                                                                                     \
+    } while (0)
+
+/*-------------------------------------------------------------------------
+ * Function:    compare_pb_config_info
+ *
+ * Purpose:     Helper function to compare configuration info found in a
+ *              FAPL against a canonical structure.
+ *
+ * Return:      Success:  0, if config info in FAPL matches info structure.
+ *              Failure: -1, if difference detected.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+compare_pb_config_info(hid_t fapl_id, H5FD_pb_vfd_config_t *info)
+{
+    int                   ret_value    = 0;
+    H5FD_pb_vfd_config_t *fetched_info = NULL;
+
+    if (NULL == (fetched_info = calloc(1, sizeof(H5FD_pb_vfd_config_t))))
+        PB_TEST_FAULT("memory allocation for fetched_info struct failed");
+
+    fetched_info->magic      = H5FD_PB_CONFIG_MAGIC;
+    fetched_info->version    = H5FD_CURR_SPLITTER_VFD_CONFIG_VERSION;
+    fetched_info->fapl_id    = H5I_INVALID_HID;
+
+    if (H5Pget_fapl_pb(fapl_id, fetched_info) < 0) {
+        PB_TEST_FAULT("can't get page buffer info");
+    }
+
+    if ( ( info->page_size != fetched_info->page_size ) ||
+         ( info->max_num_pages != fetched_info->max_num_pages ) ||
+         ( info->rp != fetched_info->rp ) ) {
+
+        PB_TEST_FAULT("page size, max num pages, or replacement policy mismatch\n");
+    }
+
+    if (info->fapl_id == H5P_DEFAULT) {
+
+        if (H5Pget_driver(fetched_info->fapl_id) != H5Pget_driver(H5P_FILE_ACCESS_DEFAULT)) {
+
+            PB_TEST_FAULT("underlying driver mismatch (default)\n");
+        }
+    }
+    else {
+
+        if (H5Pget_driver(fetched_info->fapl_id) != H5Pget_driver(info->fapl_id)) {
+
+            PB_TEST_FAULT("underlying driver mismatch\n");
+        }
+
+        if ( H5Pclose(fetched_info->fapl_id) < 0) {
+
+            PB_TEST_FAULT("can't close fetched_info->fapl_id)\n");
+        }
+    }
+
+done:
+
+    free(fetched_info);
+
+    return ret_value;
+
+} /* end compare_pb_config_info() */
+
+/*-------------------------------------------------------------------------
+ * Function:    run_pb_test
+ *
+ * Purpose:     Auxiliary function for test_pb().
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description:
+ *              Perform basic open-write-close with the page buffer VFD.
+ *              Prior to operations, removes files from a previous run,
+ *              if they exist.
+ *              After writing, verify the contents.
+ *              Includes FAPL sanity testing.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+run_pb_test(const struct pb_dataset_def *data, const hid_t sub_fapl_id)
+{
+    hid_t                 file_id         = H5I_INVALID_HID;
+    hid_t                 fapl_id         = H5I_INVALID_HID;
+    hid_t                 dset_id         = H5I_INVALID_HID;
+    hid_t                 space_id        = H5I_INVALID_HID;
+    hid_t                 fapl_id_out     = H5I_INVALID_HID;
+    hid_t                 fapl_id_cpy     = H5I_INVALID_HID;
+    H5FD_pb_vfd_config_t *vfd_config      = NULL;
+    char                 *filename        = NULL;
+    int                   ret_value        = 0;
+
+    if (NULL == (vfd_config = calloc(1, sizeof(H5FD_pb_vfd_config_t))))
+        PB_TEST_FAULT("memory allocation for vfd_config struct failed");
+
+    if (NULL == (filename = calloc(H5FD_SPLITTER_PATH_MAX + 1, sizeof(char))))
+        PB_TEST_FAULT("memory allocation for filename string failed");
+
+    vfd_config->magic          = H5FD_PB_CONFIG_MAGIC;
+    vfd_config->version        = H5FD_CURR_PB_VFD_CONFIG_VERSION;
+    vfd_config->page_size      = H5FD_PB_DEFAULT_PAGE_SIZE;
+    vfd_config->max_num_pages  = H5FD_PB_DEFAULT_MAX_NUM_PAGES;
+    vfd_config->rp             = H5FD_PB_DEFAULT_REPLACEMENT_POLICY;
+    vfd_config->fapl_id        = sub_fapl_id;
+
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config->fapl_id, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, vfd_config) < 0) {
+        PB_TEST_FAULT("can't set page buffer FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not page buffer\n");
+    }
+
+    if (compare_pb_config_info(fapl_id, vfd_config) < 0) {
+        PB_TEST_FAULT("information mismatch\n");
+    }
+
+    /*
+     * Copy property list, light compare, and close the copy.
+     * Helps test driver-implemented FAPL-copying and library ID management.
+     */
+
+    fapl_id_cpy = H5Pcopy(fapl_id);
+    if (H5I_INVALID_HID == fapl_id_cpy) {
+        PB_TEST_FAULT("can't copy FAPL\n");
+    }
+    if (compare_pb_config_info(fapl_id_cpy, vfd_config) < 0) {
+        PB_TEST_FAULT("information mismatch\n");
+    }
+    if (H5Pclose(fapl_id_cpy) < 0) {
+        PB_TEST_FAULT("can't close fapl copy\n");
+    }
+
+
+    /*
+     * Proceed with test. Create file.
+     */
+    file_id = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+    if (file_id < 0) {
+        PB_TEST_FAULT("can't create file\n");
+    }
+
+
+    /*
+     * Check driver from file
+     */
+
+    fapl_id_out = H5Fget_access_plist(file_id);
+
+    if (H5I_INVALID_HID == fapl_id_out) {
+        PB_TEST_FAULT("can't get file's FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id_out) != H5FD_PB) {
+        PB_TEST_FAULT("wrong file FAPL driver\n");
+    }
+
+    if (compare_pb_config_info(fapl_id_out, vfd_config) < 0) {
+        PB_TEST_FAULT("information mismatch\n");
+    }
+
+    if (H5Pclose(fapl_id_out) < 0) {
+        PB_TEST_FAULT("can't close file's FAPL\n");
+    }
+
+    /*
+     * Create and write the dataset
+     */
+
+    space_id = H5Screate_simple(data->n_dims, data->dims, NULL);
+
+    if (space_id < 0) {
+        PB_TEST_FAULT("can't create dataspace\n");
+    }
+
+    dset_id = H5Dcreate2(file_id, data->dset_name, data->mem_type_id, space_id, 
+                         H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+    if (dset_id < 0) {
+        PB_TEST_FAULT("can't create dataset\n");
+    }
+
+    if (H5Dwrite(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, data->buf) < 0) {
+        PB_TEST_FAULT("can't write data to dataset\n");
+    }
+
+    if (pb_compare_expected_data(file_id, data) < 0) {
+        PB_TEST_FAULT("data mismatch in file\n");
+    }
+
+
+
+    /* Close everything */
+
+    if (H5Dclose(dset_id) < 0) {
+        PB_TEST_FAULT("can't close dset\n");
+    }
+
+    if (H5Sclose(space_id) < 0) {
+        PB_TEST_FAULT("can't close space\n");
+    }
+
+    if (H5Pclose(fapl_id) < 0) {
+        PB_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5Fclose(file_id) < 0) {
+        PB_TEST_FAULT("can't close file\n");
+    }
+
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Dclose(dset_id);
+            H5Sclose(space_id);
+            H5Pclose(fapl_id_out);
+            H5Pclose(fapl_id_cpy);
+            H5Pclose(fapl_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    }
+
+    free(vfd_config);
+    free(filename);
+
+    return ret_value;
+
+} /* end run_Pb_test() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_RO_test
+ *
+ * Purpose:     Verify page buffer VFD with the Read-Only access flag.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Attempt read-only opening of file that eithr does or 
+ *              does not exist.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_RO_test(const struct pb_dataset_def *data, hid_t child_fapl_id)
+{
+    char                  filename[1024];
+    H5FD_pb_vfd_config_t *vfd_config     = NULL;
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    hid_t                 file_id        = H5I_INVALID_HID;
+    int                   ret_value      = 0;
+
+    if (NULL == (vfd_config = calloc(1, sizeof(H5FD_pb_vfd_config_t))))
+        PB_TEST_FAULT("memory allocation for vfd_config struct failed");
+
+    vfd_config->magic          = H5FD_PB_CONFIG_MAGIC;
+    vfd_config->version        = H5FD_CURR_PB_VFD_CONFIG_VERSION;
+    vfd_config->page_size      = H5FD_PB_DEFAULT_PAGE_SIZE;
+    vfd_config->max_num_pages  = H5FD_PB_DEFAULT_MAX_NUM_PAGES;
+    vfd_config->rp             = H5FD_PB_DEFAULT_REPLACEMENT_POLICY;
+    vfd_config->fapl_id        = child_fapl_id;
+
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config->fapl_id, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+
+    /* Attempt R/O open when target file doesn't exist.
+     * Should fail.
+     */
+
+    H5E_BEGIN_TRY
+    {
+        file_id = H5Fopen(filename, H5F_ACC_RDONLY, fapl_id);
+    }
+    H5E_END_TRY
+
+    if (file_id >= 0) {
+        PB_TEST_FAULT("R/O open on nonexistent file unexpectedly successful\n");
+    }
+
+
+    /* Attempt R/O open when file exists
+     */
+
+    if (pb_create_single_file_at(filename, vfd_config->fapl_id, data) < 0) {
+        PB_TEST_FAULT("can't create file\n");
+    }
+
+    file_id = H5Fopen(filename, H5F_ACC_RDONLY, fapl_id);
+
+    if (file_id < 0) {
+        PB_TEST_FAULT("R/O open on extant file failed\n");
+    }
+
+    if (pb_compare_expected_data(file_id, data) < 0) {
+        PB_TEST_FAULT("data mismatch in file\n");
+    }
+
+    if (H5Fclose(file_id) < 0) {
+        PB_TEST_FAULT("can't close file(s)\n");
+    }
+
+    file_id = H5I_INVALID_HID;
+
+    /* Cleanup
+     */
+
+    if (H5Pclose(fapl_id) < 0) {
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    }
+
+    fapl_id = H5I_INVALID_HID;
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    }
+
+    free(vfd_config);
+
+    return ret_value;
+
+} /* end pb_RO_test() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_create_single_file_at
+ *
+ * Purpose:     Create a file, optionally w/ dataset.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description:
+ *              Create a file at the given location with the given FAPL,
+ *              and write data as defined in `data` in a pre-determined 
+ *              location in the file.
+ *
+ *              If the dataset definition pointer is NULL, no data is written
+ *              to the file.
+ *
+ *              Will always overwrite an existing file with the given 
+ *              name/path.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_create_single_file_at(const char *filename, hid_t fapl_id, const struct pb_dataset_def *data)
+{
+    hid_t file_id   = H5I_INVALID_HID;
+    hid_t space_id  = H5I_INVALID_HID;
+    hid_t dset_id   = H5I_INVALID_HID;
+    int   ret_value = 0;
+
+    if (filename == NULL || *filename == '\0') {
+        PB_TEST_FAULT("filename is invalid\n");
+    }
+    /* TODO: sanity-check fapl id? */
+
+    file_id = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+
+    if (file_id < 0) {
+        PB_TEST_FAULT("can't create file\n");
+    }
+
+    if (data) {
+
+        /* TODO: sanity-check data, if it exists? */
+
+        space_id = H5Screate_simple(data->n_dims, data->dims, NULL);
+
+        if (space_id < 0) {
+            PB_TEST_FAULT("can't create dataspace\n");
+        }
+
+        dset_id = H5Dcreate2(file_id, data->dset_name, data->mem_type_id, space_id, 
+                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+        if (dset_id < 0) {
+            PB_TEST_FAULT("can't create dataset\n");
+        }
+
+        if (H5Dwrite(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, data->buf) < 0) {
+            PB_TEST_FAULT("can't write data to dataset\n");
+        }
+
+        if (H5Dclose(dset_id) < 0) {
+            PB_TEST_FAULT("can't close dset\n");
+        }
+
+        if (H5Sclose(space_id) < 0) {
+            PB_TEST_FAULT("can't close space\n");
+        }
+
+        if (pb_compare_expected_data(file_id, data) < 0) {
+            PB_TEST_FAULT("data mismatch in file\n");
+        }
+
+        if (H5Fclose(file_id) < 0) {
+            PB_TEST_FAULT("can't close file\n");
+        }
+
+        /* re-open the file and verify its contents */
+        file_id = H5Fopen(filename, H5F_ACC_RDWR, fapl_id);
+
+        if (file_id < 0) {
+            PB_TEST_FAULT("R/W open on extant file failed\n");
+        }
+
+        if (pb_compare_expected_data(file_id, data) < 0) {
+            PB_TEST_FAULT("data mismatch in file\n");
+        }
+
+    } /* end if data definition is provided */
+
+    if (H5Fclose(file_id) < 0) {
+        PB_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Dclose(dset_id);
+            H5Sclose(space_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    } /* end if error */
+
+    return ret_value;
+
+} /* end pb_create_single_file_at() */
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_compare_expected_data
+ *
+ * Purpose:     Compare data within a predermined dataset.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Read data from the file at a predetermined location, and
+ *              compare its contents byte-for-byte with that expected in
+ *              the `data` definition structure.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_compare_expected_data(hid_t file_id, const struct pb_dataset_def *data)
+{
+    hid_t  dset_id = H5I_INVALID_HID;
+    int    buf[PB_DS_SIZE][PB_DS_SIZE];
+    int    expected[PB_DS_SIZE][PB_DS_SIZE];
+    size_t i         = 0;
+    size_t j         = 0;
+    int    ret_value = 0;
+
+    if (sizeof((void *)buf) != sizeof(data->buf)) {
+        PB_TEST_FAULT("invariant size of expected data does not match that received!\n");
+    }
+
+    memcpy(expected, data->buf, sizeof(expected));
+
+    dset_id = H5Dopen2(file_id, data->dset_name, H5P_DEFAULT);
+
+    if (dset_id < 0) {
+        PB_TEST_FAULT("can't open dataset\n");
+    }
+
+    if (H5Dread(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (void *)buf) < 0) {
+        PB_TEST_FAULT("can't read dataset\n");
+    }
+
+    for (i = 0; i < PB_DS_SIZE; i++) {
+        for (j = 0; j < PB_DS_SIZE; j++) {
+            if (buf[i][j] != expected[i][j]) {
+                PB_TEST_FAULT("mismatch in expected data\n");
+            }
+        }
+    }
+
+    if (H5Dclose(dset_id) < 0) {
+        PB_TEST_FAULT("can't close dataset\n");
+    }
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Dclose(dset_id);
+        }
+        H5E_END_TRY
+    }
+
+    return ret_value;
+
+} /* end pb_compare_expected_data() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_create_write_read
+ *
+ * Purpose:     Creates a file and does a write and read test.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Creates a file, and then tests the write and read function 
+ *              by writing a full page (middle) and then reading it
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_create_write_read(void)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    H5FD_t               *file_ptr       = NULL;
+    int                   ret_value      = 0;
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT
+    };
+
+    unsigned char        *page     = NULL;
+    unsigned char        *read_buf = NULL;
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that doesn't exist, should create the file */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    
+    /***** Write middle test *****/
+
+    page = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == page) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.page_size; i++)
+        page[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write data to file\n");
+
+    
+    /***** Read middle test *****/
+    
+    read_buf = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+    
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0,  
+                    vfd_config.page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(page, read_buf, vfd_config.page_size) != 0) 
+        PB_TEST_FAULT("data read from file doesn't match data written\n");
+    
+    
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (page) 
+        free(page);
+    
+    if (read_buf)
+        free(read_buf);
+
+    return ret_value;
+
+} /* end pb_test_create_write_read */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_head_middle_tail
+ *
+ * Purpose:     Writes and reads a head, middle, and tail.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Opens a file and writes 10 pages in the file to test 
+ *              reading and writing with a non-blank file. Then closes the
+ *              the file and reopens it to start fresh. Then writes and 
+ *              reads head, middle, and tail pages.
+ *              
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_head_middle_tail(void)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    H5FD_t               *file_ptr       = NULL;
+    int                   ret_value      = 0;
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT
+    };
+    unsigned char        *setup_buf  = NULL;
+    unsigned char        *page         = NULL;
+    unsigned char        *read_buf     = NULL;
+    size_t                partial_page_size = vfd_config.page_size / 2;
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that doesn't exist, should create the file */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    /***** Sets up file to be non-empty *****/
+    setup_buf = (unsigned char *)malloc(vfd_config.page_size * 64);
+    if (NULL == setup_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+    
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.page_size * 64; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.page_size * 64, setup_buf) < 0)
+        PB_TEST_FAULT("couldn't write create_file to file\n");
+
+    /* Closes the file and fapl to start tests fresh */
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+
+    /***** Creates new fapl and reopens file for tests *****/
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that doesn't exist, should create the file */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+
+    /**********************/
+    /***** Head Tests *****/
+    /**********************/
+
+    page = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == page) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.page_size; i++)
+        page[i] = (unsigned char)rand() % 256;
+
+    read_buf = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+
+
+    /***** Write head when page is NOT in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, partial_page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write head to file\n");
+
+
+    /***** Read head when page is NOT in page buffer *****/
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 6114, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read head from file\n");
+
+    /* Compares the read data with what the file should have */
+    if (memcmp(setup_buf + 6114, read_buf, partial_page_size) != 0) 
+        PB_TEST_FAULT("head read from file doesn't match data written\n");
+
+
+    /***** Write head when page is in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 6114, partial_page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write head to file\n");
+
+
+    /***** Read head when page is in page buffer *****/
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read head from file\n");
+
+    /* Compares the read data with the data the first head write wrote to file */
+    if (memcmp(page, read_buf, partial_page_size) != 0) 
+        PB_TEST_FAULT("head read from file doesn't match data written\n");
+
+
+    /***** Write head when data starts and ends inside of a page *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 1000, partial_page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write head to file\n");
+
+    
+    /***** Read head when data starts and ends inside of a page *****/
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 1000, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read head from file\n");
+
+    /* Compares the read data with the data the last head write wrote to file */
+    if (memcmp(page, read_buf, partial_page_size) != 0) 
+        PB_TEST_FAULT("head read from file doesn't match data written\n");
+
+
+    /************************/
+    /***** Middle Tests *****/
+    /************************/
+
+    /***** Write middle when page is NOT in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8191, vfd_config.page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write data to file\n");
+
+    
+    /***** Read middle when page is NOT in page buffer *****/
+    
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, vfd_config.page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compares the read data with what the file should have */
+    if (memcmp(setup_buf + 12288, read_buf, vfd_config.page_size) != 0) 
+        PB_TEST_FAULT("data read from file doesn't match data written\n");
+
+    
+    /***** Write middle when page is in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write data to file\n");
+    
+
+
+    /***** Read middle when page is in page buffer *****/
+
+    /* head read to get the needed page for the middle read test in the page buffer*/
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 14336, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, vfd_config.page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compares the read data with what what was written to the file */
+    if (memcmp(setup_buf + 12288, read_buf, vfd_config.page_size) != 0) 
+        PB_TEST_FAULT("data read from file doesn't match data written\n");
+
+
+
+
+    /**********************/
+    /***** Tail Tests *****/
+    /**********************/
+
+
+    /***** Write tail when page is NOT in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write tail to file\n");
+
+    
+    /***** Read tail when page is NOT in page buffer *****/
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 20480, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read tail from file\n");
+
+    /* Compares the read data with what the file should have */
+    if (memcmp(setup_buf + 20480, read_buf, partial_page_size) != 0) 
+        PB_TEST_FAULT("tail read from file doesn't match data written\n");
+
+    
+    /***** Write tail when page is in page buffer *****/
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 20480, partial_page_size, page) < 0)
+        PB_TEST_FAULT("couldn't write tail to file\n");
+
+    
+    /***** Read tail when page is in page buffer *****/
+
+    /* Read the data from the file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read tail from file\n");
+
+    /* Compares the read data with the data the first tail write wrote to file */
+    if (memcmp(page, read_buf, partial_page_size) != 0) 
+        PB_TEST_FAULT("tail read from file doesn't match data written\n");
+
+
+    /***** End Tests *****/   
+
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (setup_buf) 
+        free(setup_buf);
+
+    if (page) 
+        free(page);
+    
+    if (read_buf)
+        free(read_buf);
+
+    return ret_value;
+
+} /* end pb_test_head_middle_tail */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_rp_eviction_and_invalidation
+ *
+ * Purpose:     Ensures the replacement policy (rp)'s eviction and
+ *              invalidation functions work as expected.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Opens a file and writes 64 tail pages to it (tail pages 
+ *              are used because they're easier to calculate the offset),
+ *              to fill the page buffer with the max number of pages it 
+ *              can hold. Then several more tail reads are conducted to 
+ *              make sure pages are being evicted for the new reads.
+ *              Finally, several whole page middles are written to ensure 
+ *              that the pages are being invalidated when a middle write 
+ *              is performed and the page is in the page buffer it is
+ *              invalidated.
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_rp_eviction_and_invalidation(void)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    H5FD_t               *file_ptr       = NULL;
+    int                   ret_value      = 0;
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT
+    };
+    unsigned char        *setup_buf    = NULL;
+    unsigned char        *page         = NULL;
+    unsigned char        *read_buf     = NULL;
+    size_t                partial_page_size = vfd_config.page_size / 2;
+    size_t                i            = 0;
+
+    /* setup the target file name */
+
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that does exist */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    /***** Sets up file to be non-empty *****/
+    setup_buf = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == setup_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+    
+    /* Fill the buffer with random characters to simulate data */
+    for (i = 0; i < vfd_config.page_size; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+    /* loops 64 times to fill the page buffer to it's maximum pages */
+    for (i = 0; i < 64; i++) {
+
+        /* Write the data to the file */
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size, 
+                        partial_page_size, setup_buf) < 0)
+            PB_TEST_FAULT("couldn't write page to file\n");
+    }
+
+
+
+    /*****************************************/
+    /***** Tail Reads For Eviction Test *****/
+    /*****************************************/
+
+    page = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == page) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    for (i = 0; i < vfd_config.page_size; i++)
+        page[i] = (unsigned char)rand() % 256;
+
+    /* Loop to do 10 tail reads */
+    for (i = 0; i < 10; i++) {
+
+        /* Read the data from the file */
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size,  
+                        partial_page_size, page) < 0) 
+            PB_TEST_FAULT("couldn't read data from file\n");
+    }
+
+
+    /***********************************************/
+    /***** Middle Writes For Invalidation Test *****/
+    /***********************************************/
+
+    read_buf = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+
+    /* Loop to do 10 middle writes */
+    for (i = 0; i < 10; i++) {
+
+        /* Write the data to the file */
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size, 
+                        vfd_config.page_size, page) < 0)
+            PB_TEST_FAULT("couldn't write data to file\n");
+
+        /* Does a tail read for the same page just written to ensure the page was invalidated */
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size,  
+                        partial_page_size, read_buf) < 0) 
+            PB_TEST_FAULT("couldn't read data from file\n");
+
+        /* Compares the read buf with the original page !!!SHOULD NOT MATCH!!! */
+        if (memcmp(setup_buf, read_buf, partial_page_size) == 0) 
+            PB_TEST_FAULT("tail read from file matches original and should not\n");
+
+        /* Compares the read buf with the write, should match */
+        if (memcmp(page, read_buf, partial_page_size) != 0) 
+            PB_TEST_FAULT("tail read from file doesn't match data written\n");
+    }
+
+
+    /***** End Tests *****/   
+
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (setup_buf) 
+        free(setup_buf);
+
+    if (page) 
+        free(page);
+    
+    if (read_buf)
+        free(read_buf);
+
+    return ret_value;
+
+} /* end pb_test_rp_eviction_and_invalidation */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_page_combinations
+ *
+ * Purpose:     Tests different combinations of head, middle, and tail
+ *              pages.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Opens the file from the previous test, and performs write 
+ *              and read tests of different combinations of head, middle,
+ *              and tail pages. 
+ *              
+ *              The tests are as follows:
+ *              - head and tail
+ *              - head and middle
+ *              - middle and tail 
+ *              - head, middle, and tail
+ *              - head, multiple middles, and tail
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_page_combinations(void)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    H5FD_t               *file_ptr       = NULL;
+    int                   ret_value      = 0;
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT
+    };
+    unsigned char        *write_buf    = NULL;
+    unsigned char        *read_buf     = NULL;
+    size_t                buf_size     = vfd_config.page_size * 6;
+    size_t                i            = 0;
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that does exist*/
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+
+
+    /*************************/
+    /***** HEAD AND TAIL *****/
+    /*************************/
+
+    read_buf = (unsigned char *)malloc(buf_size);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+    
+    write_buf = (unsigned char *)malloc(buf_size);
+    if (NULL == write_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    for (i = 0; i < buf_size; i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /****** Read test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 10240, vfd_config.page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, vfd_config.page_size, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /***************************/
+    /***** HEAD AND MIDDLE *****/
+    /***************************/
+
+    /****** Read test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 22528, 6144, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 18432, 6144, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /***************************/
+    /***** MIDDLE AND TAIL *****/
+    /***************************/
+
+    /****** Read test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 32768, 6144, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24576, 6144, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /**********************************/
+    /***** HEAD, MIDDLE, AND TAIL *****/
+    /**********************************/
+
+    /****** Read test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 61440, vfd_config.page_size * 2, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 47108, vfd_config.page_size * 2, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /********************************************/
+    /***** HEAD, MULTIPLE MIDDLES, AND TAIL *****/
+    /********************************************/
+
+
+    /****** Read test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 108544, vfd_config.page_size * 5, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 79872, vfd_config.page_size * 5, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+
+    /***** End Tests *****/   
+
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (write_buf) 
+        free(write_buf);
+    
+    if (read_buf)
+        free(read_buf);
+
+    return ret_value;
+
+} /* end pb_test_page_combinations */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_specific_cases
+ *
+ * Purpose:     Tests multiple middle requests where only specific pages 
+ *              exist in the page buffer
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Opens the file from the previous test, and performs write 
+ *              and read tests of multiple middles where specific ones
+ *              exist in the page buffer.
+ *              
+ *              The tests are as follows:
+ *              - multiple middles where the first page exists in the pb
+ *              - multiple middles where the last page exists in the pb
+ *              - multiple middles where two consecutive page exist in 
+ *                the pb, but the first and last middles do not
+ *              - multiple middles where alternating pages exist in the pb
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_specific_cases(void)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id        = H5I_INVALID_HID;
+    H5FD_t               *file_ptr       = NULL;
+    int                   ret_value      = 0;
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT
+    };
+    unsigned char        *setup_buf    = NULL;
+    unsigned char        *write_buf    = NULL;
+    unsigned char        *read_buf     = NULL;
+    size_t                partial_size = vfd_config.page_size / 2;
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+        PB_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    /* Opens a file that does exist*/
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+
+    setup_buf = (unsigned char *)malloc(vfd_config.page_size);
+    if (NULL == setup_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+
+    write_buf = (unsigned char *)malloc(vfd_config.page_size * 5);
+    if (NULL == write_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    read_buf = (unsigned char *)malloc(vfd_config.page_size * 5);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+
+
+    /********************************************************/
+    /***** MIDDLES WITH FIRST PAGE EXISTING IN THE PB *****/
+    /********************************************************/
+
+    /* tail read to get the first page of the request in the page buffer */
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Read test (read is done first because write will invalidate the page ) *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, vfd_config.page_size * 4, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, vfd_config.page_size * 4, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /********************************************************/
+    /***** MIDDLES WITH LAST PAGE EXISTING IN THE PB *****/
+    /********************************************************/
+
+    /* tail read to get the last page of the request in the page buffer */
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Read test (read is done first because write will invalidate the page ) *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size * 4, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size * 4, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /*********************************************************************************/
+    /***** MIDDLES WHERE FIRST AND LAST ARE NOT IN PB BUT TWO MIDDLE PAGES ARE *****/
+    /*********************************************************************************/
+
+    /* tail read to get the last page of the request in the page buffer */
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Read test (read is done first because write will invalidate the page ) *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8192, vfd_config.page_size * 4, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8192, vfd_config.page_size * 4, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /**************************************************************/
+    /***** MIDDLES TEST WHERE ALTERNATING PAGES ARE IN THE PB *****/
+    /**************************************************************/
+
+    /* tail read to get the last page of the request in the page buffer */
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24576, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /****** Read test (read is done first because write will invalidate the page ) *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, vfd_config.page_size * 4, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /****** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, vfd_config.page_size * 4, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+
+    /***** End Tests *****/   
+
+    if (H5Pclose(fapl_id) < 0) 
+        PB_TEST_FAULT("can't close FAPL ID\n");
+    
+    if (H5FDclose(file_ptr) < 0)
+        PB_TEST_FAULT("can't close file\n");
+
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (setup_buf) 
+        free(setup_buf);
+
+    if (write_buf) 
+        free(write_buf);
+    
+    if (read_buf)
+        free(read_buf);
+
+    return ret_value;
+
+} /* end pb_test_specific_cases */
+
+
+
+/*-------------------------------------------------------------------------
+ * Function:    test_pb
+ *
+ * Purpose:     Tests the page buffer VFD
+ *
+ *              THe current version is derived from the splitter test 
+ *              code, and is intended to show basic pass through 
+ *              functionality.  It will have to be revised heavily 
+ *              as the page buffer is implemented.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description:
+ *              This test function uses the page buffer VFD to produce a 
+ *              file and verify its contents.
+ *
+ *-------------------------------------------------------------------------
+ */
+
+static herr_t
+test_pb(void)
+{
+    int                         buf[PB_DS_SIZE][PB_DS_SIZE];
+    hsize_t                     dims[2]       = {PB_DS_SIZE, PB_DS_SIZE};
+    hid_t                       child_fapl_id = H5I_INVALID_HID;
+    int                         i             = 0;
+    int                         j             = 0;
+    struct pb_dataset_def data;
+
+    TESTING("Page Buffer file driver");
+
+    /* pre-fill data buffer to write */
+    for (i = 0; i < PB_DS_SIZE; i++) {
+        for (j = 0; j < PB_DS_SIZE; j++) {
+            buf[i][j] = i * 100 + j;
+        }
+    }
+
+    /* Dataset info */
+    data.buf         = (void *)buf;
+    data.mem_type_id = H5T_NATIVE_INT;
+    data.dims        = dims;
+    data.n_dims      = 2;
+    data.dset_name   = PB_DATASET_NAME;
+
+    /* Stand-in for manual FAPL creation
+     * Enables verification with arbitrary VFDs via `make check-vfd`
+     *
+     * Note: Due to cache coherency concerns, the page buffer VFD 
+     *       is incompatible with parallel HDF5 -- test code will 
+     *       have to be modified to reflect this at some point.
+     *
+     *                                       -- JRM 
+     */
+    child_fapl_id = h5_fileaccess();
+    if (child_fapl_id < 0) {
+        TEST_ERROR;
+    }
+
+
+    /* Test Read-Only access, including when the file does not exist.
+     */
+    if (pb_RO_test(&data, child_fapl_id) < 0) {
+        TEST_ERROR;
+    }
+
+    /* Test file creation, utilizing different child FAPLs (default vs.
+     * specified), logfile, and Write Channel error ignoring behavior.
+     */
+    for (i = 0; i < 2; i++) {
+
+        hid_t test_child_fapl_id;
+
+        test_child_fapl_id = (i > 0) ? child_fapl_id : H5P_DEFAULT;
+
+        if ( run_pb_test(&data, test_child_fapl_id) < 0 ) {
+            TEST_ERROR;
+        }
+
+    } /* end for child fapl definition */
+
+    /**
+     * Tests creating a file and then writing and reading data to it.
+     * This is a simple write and read test with a full page (middle),
+     * just to ensure the write and read functions are working with
+     * the easiest case.
+     */
+    if ( pb_test_create_write_read() < 0 ) {
+        TEST_ERROR;
+    }
+
+    /**
+     * Tests a write and read of head, middle, and tail pages, both
+     * when the page is already in the page buffer and when it is not.
+     * Also tests a specific head case when the request starts and
+     * ends entirely inside of a page.
+     */
+    if ( pb_test_head_middle_tail() < 0 ) {
+        TEST_ERROR;
+    }
+
+    /**
+     * The eviction function is tested by filling the page buffer with
+     * its max number of pages and then doing several tail reads to 
+     * ensure pages are being evicted for the new ones to be stored. 
+     * 
+     * The invalidation function is tested by performing several middle
+     * writes of pages that are already in the page buffer. The page
+     * should be invalidated when a middle write is performed and the
+     * page is in the page buffer. This is checked by performing a read
+     * and comparing the read data with the original data (should fail)
+     * and comparing the read data with the newly written data (should
+     * succeed).
+     */
+    if ( pb_test_rp_eviction_and_invalidation() < 0 ) {
+        TEST_ERROR;
+    }
+
+    /* Tests different combinations of head, middle, and tail pages */
+    if ( pb_test_page_combinations() < 0 ) {
+        TEST_ERROR;
+    }
+
+    /* Tests multiple middle requests where only specific pages exist in the page buffer */
+    if ( pb_test_specific_cases() < 0 ) {
+        TEST_ERROR;
+    }
+
+    if (H5Pclose(child_fapl_id) == FAIL) {
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+    if (child_fapl_id != H5I_INVALID_HID) {
+
+        H5Pclose(child_fapl_id);
+    }
+
+    return -1;
+
+} /* end test_pb() */
+
+
+#undef PB_TEST_FAULT
+
+#endif /* page buffer VFD test code */
+
+#if 1 /* encryption VFD test code */
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ * Macro: CRYPT_TEST_FAULT()
+ *
+ * utility macro, helps create stack-like backtrace on error.
+ * requires defined in the calling function:
+ *    * variable `int ret_value` (return -1 on error)`
+ *    * label `done` for exit on fault
+ * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ */
+#define CRYPT_TEST_FAULT(mesg)                                                                            \
+    do {                                                                                               \
+        H5_FAILED();                                                                                   \
+        AT();                                                                                          \
+        fprintf(stderr, mesg);                                                                         \
+        H5Eprint2(H5E_DEFAULT, stderr);                                                                \
+        fflush(stderr);                                                                                \
+        ret_value = -1;                                                                                \
+        goto done;                                                                                     \
+    } while (0)
+
+/*-------------------------------------------------------------------------
+ * Function:    compare_crypt_config_info
+ *
+ * Purpose:     Helper function to compare configuration info found in a
+ *              FAPL against a canonical structure.
+ *
+ * Return:      Success:  0, if config info in FAPL matches info structure.
+ *              Failure: -1, if difference detected.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+compare_crypt_config_info(hid_t fapl_id, H5FD_crypt_vfd_config_t *info)
+{
+    int                      ret_value    = 0;
+    H5FD_crypt_vfd_config_t *fetched_info = NULL;
+
+    if (NULL == (fetched_info = calloc(1, sizeof(H5FD_crypt_vfd_config_t))))
+        CRYPT_TEST_FAULT("memory allocation for fetched_info struct failed");
+
+    fetched_info->magic      = H5FD_CRYPT_MAGIC;
+    fetched_info->version    = H5FD_CURR_CRYPT_VFD_CONFIG_VERSION;
+    fetched_info->fapl_id    = H5I_INVALID_HID;
+
+    if (H5Pget_fapl_crypt(fapl_id, fetched_info) < 0) {
+        CRYPT_TEST_FAULT("can't get page buffer info");
+    }
+
+
+
+    if (info->plaintext_page_size != fetched_info->plaintext_page_size) {
+        fprintf(stderr, "plaintext_page_size mismatch: expected %zu, got %zu\n",
+                info->plaintext_page_size, fetched_info->plaintext_page_size);
+        CRYPT_TEST_FAULT("plaintext_page_size mismatch\n");
+    }
+    if (info->ciphertext_page_size != fetched_info->ciphertext_page_size) {
+        fprintf(stderr, "ciphertext_page_size mismatch: expected %zu, got %zu\n",
+                info->ciphertext_page_size, fetched_info->ciphertext_page_size);
+        CRYPT_TEST_FAULT("ciphertext_page_size mismatch\n");
+    }
+
+    if (info->encryption_buffer_size != fetched_info->encryption_buffer_size) {
+        fprintf(stderr, "encryption_buffer_size mismatch: expected %zu, got %zu\n",
+                info->encryption_buffer_size, fetched_info->encryption_buffer_size);
+        CRYPT_TEST_FAULT("encryption_buffer_size mismatch\n");
+    }
+
+    if (info->cipher != fetched_info->cipher) {
+        fprintf(stderr, "cipher mismatch: expected %u, got %u\n",
+                info->cipher, fetched_info->cipher);
+        CRYPT_TEST_FAULT("cipher mismatch\n");
+    }
+
+    if (info->cipher_block_size != fetched_info->cipher_block_size) {
+        fprintf(stderr, "cipher_block_size mismatch: expected %zu, got %zu\n",
+                info->cipher_block_size, fetched_info->cipher_block_size);
+        CRYPT_TEST_FAULT("cipher_block_size mismatch\n");
+    }
+
+    if (info->key_size != fetched_info->key_size) {
+        fprintf(stderr, "key_size mismatch: expected %zu, got %zu\n",
+                info->key_size, fetched_info->key_size);
+        CRYPT_TEST_FAULT("key_size mismatch\n");
+    }
+
+    if (info->iv_size != fetched_info->iv_size) {
+        fprintf(stderr, "iv_size mismatch: expected %zu, got %zu\n",
+                info->iv_size, fetched_info->iv_size);
+        CRYPT_TEST_FAULT("iv_size mismatch\n");
+    }
+
+    if (info->mode != fetched_info->mode) {
+        fprintf(stderr, "mode mismatch: expected %u, got %u\n",
+                info->mode, fetched_info->mode);
+        CRYPT_TEST_FAULT("mode mismatch\n");
+    }
+
+
+
+    if ( info->key_size > 0 ) {
+
+        if ( memcmp(info->key, fetched_info->key, info->key_size) != 0 ) {
+
+            CRYPT_TEST_FAULT("key mismatch\n");
+        }
+    }
+
+    if (info->fapl_id == H5P_DEFAULT) {
+
+        if (H5Pget_driver(fetched_info->fapl_id) != H5Pget_driver(H5P_FILE_ACCESS_DEFAULT)) {
+
+            CRYPT_TEST_FAULT("underlying driver mismatch (default)\n");
+        }
+    }
+    else {
+
+        if (H5Pget_driver(fetched_info->fapl_id) != H5Pget_driver(info->fapl_id)) {
+
+            CRYPT_TEST_FAULT("underlying driver mismatch\n");
+        }
+    }
+
+
+done:
+    free(fetched_info);
+
+    return ret_value;
+
+} /* end compare_crypt_config_info() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    test_crypt_fapl
+ *
+ * Purpose:     Test encryption VFD FAPL management
+ *
+ *              Quick check of encryption VFD FAPL management -- should 
+ *              be more complete.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+test_crypt_fapl(void)
+{
+    hid_t                 fapl_id         = H5I_INVALID_HID;
+    hid_t                 fapl_id_cpy     = H5I_INVALID_HID;
+    H5FD_crypt_vfd_config_t vfd_cfg_0 = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    int                      ret_value    = 0;
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_cfg_0) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_cfg_0) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+
+    /*
+     * Copy property list, light compare, and close the copy.
+     * Helps test driver-implemented FAPL-copying and library ID management.
+     */
+
+    fapl_id_cpy = H5Pcopy(fapl_id);
+
+    if (H5I_INVALID_HID == fapl_id_cpy) {
+        CRYPT_TEST_FAULT("can't copy FAPL\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id_cpy, &vfd_cfg_0) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    if (H5Pclose(fapl_id_cpy) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl copy\n");
+    }
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+done:
+
+    return ret_value;
+
+} /* test_crypt_fapl() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_create
+ *
+ * Purpose:     Tests the encryption VFD creating and opening a file that 
+ *              doesn't exist.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_create(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr          = NULL;
+    int                     ret_value    = 0;
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /** 
+     * Opens a file that doesn't exist with the create flag. Should create the
+     * file, open it, and write the first two pages with the config data.
+     */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    return ret_value;
+    
+} /* end crypt_test_open() */
+
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_create_and_write
+ *
+ * Purpose:     Tests the encryption VFD creating and opening a file that 
+ *              doesn't exist and writing to it. Only testing with one page
+ *              of data per write call. 
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_create_and_write(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * one_page_write_buf = NULL;
+    unsigned char         * one_page_read_buf  = NULL;
+    int                     ret_value    = 0;
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /** 
+     * Opens a file that doesn't exist with the create flag. Should create the
+     * file, open it, and write the first two pages with the config data.
+     */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    /* Buffer to hold the data that will be used to test the write function */
+    one_page_write_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == one_page_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
+        one_page_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, one_page_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+
+    /* Buffer for the read test to store the page that was just written */
+    one_page_read_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == one_page_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, one_page_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compare the data that was written to the data that was read */
+    if (memcmp(one_page_write_buf, one_page_read_buf, 
+                vfd_config.plaintext_page_size) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (one_page_write_buf)
+        free(one_page_write_buf);
+
+    if (one_page_read_buf)
+        free(one_page_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_create_and_write() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_verify_create_and_encryption
+ *
+ * Purpose:     Tests the encryption VFD creating and opening a file that 
+ *              doesn't exist and writing one page to it. Then using POSIX
+ *              calls to open the file manually, reads the entire file 
+ *              (first two config pages and the third encrypted page) into
+ *              a buffer. Another buffer is allocated and three pages are 
+ *              manually created and stored in this new buffer. The 
+ *              manually created pages are exactly what the pages in the
+ *              file should be. These two buffers are then compared to 
+ *              ensure the data in the file is correct (first page 
+ *              configuration data, second page test encryption phrase, 
+ *              third page encrypted data).
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_verify_create_and_encryption(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr            = NULL;
+    unsigned char         * write_buf           = NULL;
+    unsigned char         * read_buf            = NULL;
+    unsigned char         * compare_buf         = NULL;
+    int                     fd                  = -1;
+    size_t                  size_of_3_page_file;
+    gcry_cipher_hd_t        handle;
+    unsigned char         * iv_second_page      = NULL;
+    unsigned char         * iv_third_page       = NULL;
+    const char            * test_phrase         = "Decryption works";
+    unsigned char         * test_phrase_buf     = NULL;
+    int                     ret_value           = 0;
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* create and initialize FAPL for the encryption VFD */
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set encryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /** 
+     * Opens a file that doesn't exist with the create flag. Should create the
+     * file, open it, and write the first two pages with config data.
+     */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test writing data to the file  **********/
+
+    /* Buffer to hold the data that will be used to test the write function */
+    write_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Close the file */
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+
+    /*************************************************************************
+     * Opens the newly created file using normal POSIX calls to read the first
+     * two configuration pages and the third encrypted page into a buffer to 
+     * compare with manually created pages to ensure the data is correct.
+     *************************************************************************/
+
+    /* The size of all the pages file */
+    size_of_3_page_file = 3 * vfd_config.ciphertext_page_size;
+
+    /* Allocate buffer to read the entire file to */
+    read_buf = malloc(size_of_3_page_file);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+    /* Allocate buffer to store the IVs for the second and third pages */
+    iv_second_page = malloc(vfd_config.iv_size);
+    if (NULL == iv_second_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
+    
+    iv_third_page = malloc(vfd_config.iv_size);
+    if (NULL == iv_third_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
+    
+
+    /* Open the file using POSIX calls */
+    if ((fd = open(filename, O_RDONLY)) < 0)
+        CRYPT_TEST_FAULT("couldn't open file using POSIX calls\n");
+
+    /* Read the entire file into read_buf */
+    if (pread(fd, read_buf, size_of_3_page_file, 0) != (ssize_t)size_of_3_page_file)
+        CRYPT_TEST_FAULT("couldn't read file using POSIX calls\n");
+
+    /* Copies the IV for the second page to encrypt the manually made second page */
+    if (memcpy(iv_second_page, read_buf + vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't copy second page's IV from read_buf\n");
+
+    /* Copies the IV for the third page to encrypt the manually made third page */
+    if (memcpy(iv_third_page, read_buf + 2 * vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't copy third page's IV from read_buf\n");
+
+    /* Close the file */
+    if (close(fd) < 0)
+        CRYPT_TEST_FAULT("couldn't close file using POSIX calls\n");
+
+
+
+
+    /*************************************************************************
+     * Manually creating the data of the three pages into a buffer to compare
+     * the read_buf with to ensure the data in the file is correct.
+     *************************************************************************/
+
+    /* Allocate buffer to store the data for comparison */
+    compare_buf = malloc(size_of_3_page_file);
+    if (NULL == compare_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
+
+
+    /* Manually create the first page and store it in the compare buf */
+    if (memset((void *)(compare_buf), '\0', vfd_config.ciphertext_page_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
+
+    snprintf((char *)compare_buf, vfd_config.ciphertext_page_size,
+             "plaintext_page_size: %zu\n"
+             "ciphertext_page_size: %zu\n"
+             "encryption_buffer_size: %zu\n"
+             "cipher: %d\n"
+             "cipher_block_size: %zu\n"
+             "key_size: %zu\n"
+             "iv_size: %zu\n"
+             "mode: %d\n",
+             vfd_config.plaintext_page_size,
+             vfd_config.ciphertext_page_size,
+             vfd_config.encryption_buffer_size,
+             vfd_config.cipher,
+             vfd_config.cipher_block_size,
+             vfd_config.key_size,
+             vfd_config.iv_size,
+             vfd_config.mode);
+
+
+
+    /* Manually create the second page and store it in the compare buf*/
+    if (memset((void *)(compare_buf + vfd_config.ciphertext_page_size), '\0', 
+                vfd_config.ciphertext_page_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
+
+
+    test_phrase_buf = (unsigned char *)calloc(vfd_config.ciphertext_page_size, 
+                                                sizeof(unsigned char));
+    if ( NULL == test_phrase_buf ) 
+        CRYPT_TEST_FAULT("couldn't allocate memory for test_phrase_buf\n");
+
+    memcpy(test_phrase_buf, test_phrase, strlen(test_phrase) + 1);
+
+
+
+    /* Manually encrypt and write the second page into the compare buf */
+    if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
+                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
+        CRYPT_TEST_FAULT("couldn't open cipher handle\n");
+    
+    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
+        CRYPT_TEST_FAULT("couldn't set key\n");
+
+    /* Stores the second page's IV into the compare buf */
+    if (memcpy((void *)(compare_buf + vfd_config.ciphertext_page_size), 
+                            iv_second_page, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memcpy second page's IV to compare buf\n");
+
+    if ( gcry_cipher_setiv(handle, iv_second_page, 16) != 0 )
+        CRYPT_TEST_FAULT("couldn't set IV to handle for page 2\n");
+
+    if ( gcry_cipher_encrypt(handle, 
+            compare_buf + vfd_config.ciphertext_page_size + vfd_config.iv_size,
+            vfd_config.plaintext_page_size, 
+            test_phrase_buf, 
+            vfd_config.plaintext_page_size) != 0 )
+        CRYPT_TEST_FAULT("couldn't encrypt second page\n");
+
+    gcry_cipher_close(handle);  
+
+
+
+    /* Manually encrypt and write the created page (write_buf) into the compare buf*/
+    if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
+                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
+        CRYPT_TEST_FAULT("couldn't open cipher handle for page 3\n");
+
+    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
+        CRYPT_TEST_FAULT("couldn't set key the for page 3\n");
+
+    /* Stores the third page's IV into the compare buf */
+    if (memcpy((void *)(compare_buf + 2 * vfd_config.ciphertext_page_size), 
+                            iv_third_page, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memcpy third page's IV to compare buf\n");
+
+    if ( gcry_cipher_setiv(handle, iv_third_page, 16) != 0 )
+        CRYPT_TEST_FAULT("couldn't set IV to handle for page 3\n");
+
+    if ( gcry_cipher_encrypt(handle, 
+            compare_buf + 2 * vfd_config.ciphertext_page_size + vfd_config.iv_size,
+            vfd_config.plaintext_page_size, 
+            write_buf, 
+            vfd_config.plaintext_page_size) != 0 )
+        CRYPT_TEST_FAULT("couldn't encrypt third page\n");
+
+    gcry_cipher_close(handle);
+
+
+
+    /**
+     * Compare the read_buf that holds the data read from the file and 
+     * compare_buf which holds the manually created data to ensure the data in
+     * the file matches what it should be.
+     */
+    if (memcmp(read_buf, compare_buf, size_of_3_page_file) != 0) {
+        CRYPT_TEST_FAULT("pages read from file does not match manually made pages\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+            if (fd >= 0)
+                close(fd);
+        }
+        H5E_END_TRY
+    }
+
+    if (write_buf)
+        free(write_buf);
+
+    if (compare_buf)
+        free(compare_buf);
+
+    if (read_buf)
+        free(read_buf);
+    
+    if (test_phrase_buf)
+        free(test_phrase_buf);
+    
+    if (iv_second_page)
+        free(iv_second_page);
+    
+    if (iv_third_page)
+        free(iv_third_page);
+
+    return ret_value;
+    
+} /* end crypt_test_verify_create_and_encryption() */
+
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_2pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes two pages to it.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_2pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * two_page_write_buf = NULL;
+    unsigned char         * two_page_read_buf  = NULL;
+    size_t                  size_of_2_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_2_pages = 2 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    two_page_write_buf = malloc(size_of_2_pages);
+    if (NULL == two_page_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_2_pages); i++)
+        two_page_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(2 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_2_pages, 
+                    two_page_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    two_page_read_buf = malloc(size_of_2_pages);
+    if (NULL == two_page_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_2_pages, 
+                    two_page_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(two_page_write_buf, two_page_read_buf, size_of_2_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (two_page_write_buf)
+        free(two_page_write_buf);
+
+    if (two_page_read_buf)
+        free(two_page_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_2pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_3pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes three pages to it.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_3pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * three_page_write_buf = NULL;
+    unsigned char         * three_page_read_buf  = NULL;
+    size_t                  size_of_3_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_3_pages = 3 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    three_page_write_buf = malloc(size_of_3_pages);
+    if (NULL == three_page_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_3_pages); i++)
+        three_page_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(3 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_3_pages, three_page_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    three_page_read_buf = malloc(size_of_3_pages);
+    if (NULL == three_page_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_3_pages, three_page_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(three_page_write_buf, three_page_read_buf, size_of_3_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (three_page_write_buf)
+        free(three_page_write_buf);
+
+    if (three_page_read_buf)
+        free(three_page_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_3pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_15pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 15 pages to it. The size of the encryption buffer is
+ *              16 pages, this is testing one page less than maximum pages.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_15pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_15_write_buf = NULL;
+    unsigned char         * pages_15_read_buf  = NULL;
+    size_t                  size_of_15_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_15_pages = 15 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_15_write_buf = malloc(size_of_15_pages);
+    if (NULL == pages_15_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_15_pages); i++)
+        pages_15_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(15 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_15_pages, pages_15_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_15_read_buf = malloc(size_of_15_pages);
+    if (NULL == pages_15_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_15_pages, pages_15_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_15_write_buf, pages_15_read_buf, size_of_15_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_15_write_buf)
+        free(pages_15_write_buf);
+
+    if (pages_15_read_buf)
+        free(pages_15_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_15pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_16pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 16 pages to it. The size of the encryption buffer is
+ *              16 pages, this is testing writing the maximum pages the 
+ *              buffer can hold at one time.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_16pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_16_write_buf = NULL;
+    unsigned char         * pages_16_read_buf  = NULL;
+    size_t                  size_of_16_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_16_pages = 16 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_16_write_buf = malloc(size_of_16_pages);
+    if (NULL == pages_16_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_16_pages); i++)
+        pages_16_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(16 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_16_pages, pages_16_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_16_read_buf = malloc(size_of_16_pages);
+    if (NULL == pages_16_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_16_pages, pages_16_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_16_write_buf, pages_16_read_buf, size_of_16_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_16_write_buf)
+        free(pages_16_write_buf);
+
+    if (pages_16_read_buf)
+        free(pages_16_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_16pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_17pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 17 pages to it. The size of the encryption buffer is
+ *              17 pages, this is testing writing greater than the maximum 
+ *              pages the buffer can hold at one time, testing if it can 
+ *              fully load the buffer and complete the write, then write
+ *              one more page.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_17pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_17_write_buf = NULL;
+    unsigned char         * pages_17_read_buf  = NULL;
+    size_t                  size_of_17_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_17_pages = 17 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_17_write_buf = malloc(size_of_17_pages);
+    if (NULL == pages_17_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_17_pages); i++)
+        pages_17_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(17 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_17_pages, pages_17_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_17_read_buf = malloc(size_of_17_pages);
+    if (NULL == pages_17_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_17_pages, pages_17_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_17_write_buf, pages_17_read_buf, size_of_17_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_17_write_buf)
+        free(pages_17_write_buf);
+
+    if (pages_17_read_buf)
+        free(pages_17_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_17pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_18pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 18 pages to it. The size of the encryption buffer is
+ *              18 pages, this is testing writing greater than the maximum 
+ *              pages the buffer can hold at one time, testing if it can 
+ *              fully load the buffer and complete the write, then do
+ *              more pages in the buffer again.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_18pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_18_write_buf = NULL;
+    unsigned char         * pages_18_read_buf  = NULL;
+    size_t                  size_of_18_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_18_pages = 18 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_18_write_buf = malloc(size_of_18_pages);
+    if (NULL == pages_18_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_18_pages); i++)
+        pages_18_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(18 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_18_pages, pages_18_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_18_read_buf = malloc(size_of_18_pages);
+    if (NULL == pages_18_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_18_pages, pages_18_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_18_write_buf, pages_18_read_buf, size_of_18_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_18_write_buf)
+        free(pages_18_write_buf);
+
+    if (pages_18_read_buf)
+        free(pages_18_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_18pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_32pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 32 pages to it. The size of the encryption buffer is
+ *              32 pages, this is testing writing the maximum pages the 
+ *              buffer can hold twice.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_32pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_32_write_buf = NULL;
+    unsigned char         * pages_32_read_buf  = NULL;
+    size_t                  size_of_32_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_32_pages = 32 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_32_write_buf = malloc(size_of_32_pages);
+    if (NULL == pages_32_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_32_pages); i++)
+        pages_32_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(32 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_32_pages, pages_32_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_32_read_buf = malloc(size_of_32_pages);
+    if (NULL == pages_32_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_32_pages, pages_32_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_32_write_buf, pages_32_read_buf, size_of_32_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_32_write_buf)
+        free(pages_32_write_buf);
+
+    if (pages_32_read_buf)
+        free(pages_32_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_32pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_33pages
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 33 pages to it. The size of the encryption buffer is
+ *              33 pages, this is testing writing the maximum pages the 
+ *              buffer can hold twice and then one more page.
+ * 
+ *              Using the AES256 cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_33pages(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_33_write_buf = NULL;
+    unsigned char         * pages_33_read_buf  = NULL;
+    size_t                  size_of_33_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_33_pages = 33 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_33_write_buf = malloc(size_of_33_pages);
+    if (NULL == pages_33_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_33_pages); i++)
+        pages_33_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(33 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_33_pages, pages_33_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_33_read_buf = malloc(size_of_33_pages);
+    if (NULL == pages_33_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_33_pages, pages_33_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_33_write_buf, pages_33_read_buf, size_of_33_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_33_write_buf)
+        free(pages_33_write_buf);
+
+    if (pages_33_read_buf)
+        free(pages_33_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_33pages() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_create_and_write_twofish
+ *
+ * Purpose:     Tests the encryption VFD creating and opening a file that 
+ *              doesn't exist and writing to it. Only testing with one page
+ *              of data per write call. 
+ * 
+ *              Using the TWOFISH cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_create_and_write_twofish(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 1,   /* TWOFISH */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * one_page_write_buf = NULL;
+    unsigned char         * one_page_read_buf  = NULL;
+    int                     ret_value    = 0;
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /** 
+     * Opens a file that doesn't exist with the create flag. Should create the
+     * file, open it, and write the first two pages with the config data.
+     */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    /* Buffer to hold the data that will be used to test the write function */
+    one_page_write_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == one_page_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
+        one_page_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(1 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, one_page_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+
+    /* Buffer for the read test to store the page that was just written */
+    one_page_read_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == one_page_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, one_page_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compare the data that was written to the data that was read */
+    if (memcmp(one_page_write_buf, one_page_read_buf, 
+                vfd_config.plaintext_page_size) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (one_page_write_buf)
+        free(one_page_write_buf);
+
+    if (one_page_read_buf)
+        free(one_page_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_create_and_write_twofish() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_verify_create_and_encryption_twofish
+ *
+ * Purpose:     Tests the encryption VFD creating and opening a file that 
+ *              doesn't exist and writing one page to it. Then using POSIX
+ *              calls to open the file manually, reads the entire file 
+ *              (first two config pages and the third encrypted page) into
+ *              a buffer. Another buffer is allocated and three pages are 
+ *              manually created and stored in this new buffer. The 
+ *              manually created pages are exactly what the pages in the
+ *              file should be. These two buffers are then compared to 
+ *              ensure the data in the file is correct (first page 
+ *              configuration data, second page test encryption phrase, 
+ *              third page encrypted data).
+ * 
+ *              Using the TWOFISH cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_verify_create_and_encryption_twofish(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 1,   /* TWOFISH */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr            = NULL;
+    unsigned char         * write_buf           = NULL;
+    unsigned char         * read_buf            = NULL;
+    unsigned char         * compare_buf         = NULL;
+    int                     fd                  = -1;
+    size_t                  size_of_3_page_file;
+    gcry_cipher_hd_t        handle;
+    unsigned char         * iv_second_page      = NULL;
+    unsigned char         * iv_third_page       = NULL;
+    const char            * test_phrase         = "Decryption works";
+    unsigned char         * test_phrase_buf     = NULL;
+    int                     ret_value           = 0;
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* create and initialize FAPL for the encryption VFD */
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set encryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /** 
+     * Opens a file that doesn't exist with the create flag. Should create the
+     * file, open it, and write the first two pages with config data.
+     */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test writing data to the file  **********/
+
+    /* Buffer to hold the data that will be used to test the write function */
+    write_buf = malloc(vfd_config.plaintext_page_size);
+    if (NULL == write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(1 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                    vfd_config.plaintext_page_size, write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Close the file */
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+
+    /*************************************************************************
+     * Opens the newly created file using normal POSIX calls to read the first
+     * two configuration pages and the third encrypted page into a buffer to 
+     * compare with manually created pages to ensure the data is correct.
+     *************************************************************************/
+
+    /* The size of all the pages file */
+    size_of_3_page_file = 3 * vfd_config.ciphertext_page_size;
+
+    /* Allocate buffer to read the entire file to */
+    read_buf = malloc(size_of_3_page_file);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+    /* Allocate buffer to store the IVs for the second and third pages */
+    iv_second_page = malloc(vfd_config.iv_size);
+    if (NULL == iv_second_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
+    
+    iv_third_page = malloc(vfd_config.iv_size);
+    if (NULL == iv_third_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
+    
+
+    /* Open the file using POSIX calls */
+    if ((fd = open(filename, O_RDONLY)) < 0)
+        CRYPT_TEST_FAULT("couldn't open file using POSIX calls\n");
+
+    /* Read the entire file into read_buf */
+    if (pread(fd, read_buf, size_of_3_page_file, 0) != (ssize_t)size_of_3_page_file)
+        CRYPT_TEST_FAULT("couldn't read file using POSIX calls\n");
+
+    /* Copies the IV for the second page to encrypt the manually made second page */
+    if (memcpy(iv_second_page, read_buf + vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't copy second page's IV from read_buf\n");
+
+    /* Copies the IV for the third page to encrypt the manually made third page */
+    if (memcpy(iv_third_page, read_buf + 2 * vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't copy third page's IV from read_buf\n");
+
+    /* Close the file */
+    if (close(fd) < 0)
+        CRYPT_TEST_FAULT("couldn't close file using POSIX calls\n");
+
+
+
+
+    /*************************************************************************
+     * Manually creating the data of the three pages into a buffer to compare
+     * the read_buf with to ensure the data in the file is correct.
+     *************************************************************************/
+
+    /* Allocate buffer to store the data for comparison */
+    compare_buf = malloc(size_of_3_page_file);
+    if (NULL == compare_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
+
+
+    /* Manually create the first page and store it in the compare buf */
+    if (memset((void *)(compare_buf), '\0', vfd_config.ciphertext_page_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
+
+    snprintf((char *)compare_buf, vfd_config.ciphertext_page_size,
+             "plaintext_page_size: %zu\n"
+             "ciphertext_page_size: %zu\n"
+             "encryption_buffer_size: %zu\n"
+             "cipher: %d\n"
+             "cipher_block_size: %zu\n"
+             "key_size: %zu\n"
+             "iv_size: %zu\n"
+             "mode: %d\n",
+             vfd_config.plaintext_page_size,
+             vfd_config.ciphertext_page_size,
+             vfd_config.encryption_buffer_size,
+             vfd_config.cipher,
+             vfd_config.cipher_block_size,
+             vfd_config.key_size,
+             vfd_config.iv_size,
+             vfd_config.mode);
+
+
+
+    /* Manually create the second page and store it in the compare buf*/
+    if (memset((void *)(compare_buf + vfd_config.ciphertext_page_size), '\0', 
+                vfd_config.ciphertext_page_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
+
+
+    test_phrase_buf = (unsigned char *)calloc(vfd_config.ciphertext_page_size, 
+                                                sizeof(unsigned char));
+    if ( NULL == test_phrase_buf ) 
+        CRYPT_TEST_FAULT("couldn't allocate memory for test_phrase_buf\n");
+
+    memcpy(test_phrase_buf, test_phrase, strlen(test_phrase) + 1);
+
+
+
+    /* Manually encrypt and write the second page into the compare buf */
+    if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
+                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
+        CRYPT_TEST_FAULT("couldn't open cipher handle\n");
+    
+    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
+        CRYPT_TEST_FAULT("couldn't set key\n");
+
+    /* Stores the second page's IV into the compare buf */
+    if (memcpy((void *)(compare_buf + vfd_config.ciphertext_page_size), 
+                            iv_second_page, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memcpy second page's IV to compare buf\n");
+
+    if ( gcry_cipher_setiv(handle, iv_second_page, 16) != 0 )
+        CRYPT_TEST_FAULT("couldn't set IV to handle for page 2\n");
+
+    if ( gcry_cipher_encrypt(handle, 
+            compare_buf + vfd_config.ciphertext_page_size + vfd_config.iv_size,
+            vfd_config.plaintext_page_size, 
+            test_phrase_buf, 
+            vfd_config.plaintext_page_size) != 0 )
+        CRYPT_TEST_FAULT("couldn't encrypt second page\n");
+
+    gcry_cipher_close(handle);  
+
+
+
+    /* Manually encrypt and write the created page (write_buf) into the compare buf*/
+    if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
+                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
+        CRYPT_TEST_FAULT("couldn't open cipher handle for page 3\n");
+
+    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
+        CRYPT_TEST_FAULT("couldn't set key the for page 3\n");
+
+    /* Stores the third page's IV into the compare buf */
+    if (memcpy((void *)(compare_buf + 2 * vfd_config.ciphertext_page_size), 
+                            iv_third_page, vfd_config.iv_size) == NULL)
+        CRYPT_TEST_FAULT("couldn't memcpy third page's IV to compare buf\n");
+
+    if ( gcry_cipher_setiv(handle, iv_third_page, 16) != 0 )
+        CRYPT_TEST_FAULT("couldn't set IV to handle for page 3\n");
+
+    if ( gcry_cipher_encrypt(handle, 
+            compare_buf + 2 * vfd_config.ciphertext_page_size + vfd_config.iv_size,
+            vfd_config.plaintext_page_size, 
+            write_buf, 
+            vfd_config.plaintext_page_size) != 0 )
+        CRYPT_TEST_FAULT("couldn't encrypt third page\n");
+
+    gcry_cipher_close(handle);
+
+
+
+    /**
+     * Compare the read_buf that holds the data read from the file and 
+     * compare_buf which holds the manually created data to ensure the data in
+     * the file matches what it should be.
+     */
+    if (memcmp(read_buf, compare_buf, size_of_3_page_file) != 0) {
+        CRYPT_TEST_FAULT("pages read from file does not match manually made pages\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+            if (fd >= 0)
+                close(fd);
+        }
+        H5E_END_TRY
+    }
+
+    if (write_buf)
+        free(write_buf);
+
+    if (compare_buf)
+        free(compare_buf);
+
+    if (read_buf)
+        free(read_buf);
+    
+    if (test_phrase_buf)
+        free(test_phrase_buf);
+    
+    if (iv_second_page)
+        free(iv_second_page);
+    
+    if (iv_third_page)
+        free(iv_third_page);
+
+    return ret_value;
+    
+} /* end crypt_test_verify_create_and_encryption_twofish() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_write_17pages_twofish
+ *
+ * Purpose:     Tests the encryption VFD opening an existing file and 
+ *              writes 17 pages to it. This tests writing more than the
+ *              buffer size using the TWOFISH cipher.
+ * 
+ *              Using the TWOFISH cipher
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_test_write_17pages_twofish(void)
+{
+    hid_t                   fapl_id         = H5I_INVALID_HID;
+    char                    filename[1024];
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 1,   /* TWOFISH */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    H5FD_t                * file_ptr           = NULL;
+    unsigned char         * pages_17_write_buf = NULL;
+    unsigned char         * pages_17_read_buf  = NULL;
+    size_t                  size_of_17_pages;
+    int                     ret_value    = 0;
+
+    /* setup the target file name */
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    /* Opens an existing file with the read/write flag. */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    size_of_17_pages = 17 * vfd_config.plaintext_page_size;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    pages_17_write_buf = malloc(size_of_17_pages);
+    if (NULL == pages_17_write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (size_of_17_pages); i++)
+        pages_17_write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(17 * vfd_config.plaintext_page_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_17_pages, pages_17_write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    pages_17_read_buf = malloc(size_of_17_pages);
+    if (NULL == pages_17_read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_17_pages, pages_17_read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(pages_17_write_buf, pages_17_read_buf, size_of_17_pages) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written to file\n");
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if (pages_17_write_buf)
+        free(pages_17_write_buf);
+
+    if (pages_17_read_buf)
+        free(pages_17_read_buf);
+
+    return ret_value;
+    
+} /* end crypt_test_write_17pages_twofish() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    run_crypt_test
+ *
+ * Purpose:     Auxiliary function for test_pb().
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description:
+ *              Perform basic open-write-close with the page buffer / 
+ *              encryption VFD stack.
+ *
+ *              Prior to operations, removes files from a previous run,
+ *              if they exist.
+ *
+ *              After writing, verify the contents.
+ *              Includes FAPL sanity testing.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id)
+{
+    hid_t                    file_id           = H5I_INVALID_HID;
+    hid_t                    dset_id           = H5I_INVALID_HID;
+    hid_t                    space_id          = H5I_INVALID_HID;
+    hid_t                    fapl_id_out       = H5I_INVALID_HID;
+    hid_t                    pb_fapl_id_cpy    = H5I_INVALID_HID;
+    hid_t                    crypt_fapl_id_cpy = H5I_INVALID_HID;
+    hid_t                    pb_fapl_id        = H5I_INVALID_HID;
+    hid_t                    crypt_fapl_id     = H5I_INVALID_HID;
+    char                     filename[1024];
+    H5FD_pb_vfd_config_t     pb_vfd_config =
+    {
+        /* magic          = */ H5FD_PB_CONFIG_MAGIC,
+        /* version        = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size      = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages  = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp             = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id        = */ H5P_DEFAULT  /* will overwrite */
+    };
+    H5FD_crypt_vfd_config_t  crypt_vfd_config =
+    {
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    int                   ret_value        = 0;
+
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[17], child_fapl_id, filename, 1024);
+    HDremove(filename);
+
+    /* Create a new fapl to use the cryptography file driver */
+
+    crypt_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == crypt_fapl_id) {
+        CRYPT_TEST_FAULT("can't create cryptography FAPL ID\n");
+    }
+
+    crypt_vfd_config.fapl_id = child_fapl_id;
+
+    if (H5Pset_fapl_crypt(crypt_fapl_id, &crypt_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set crypt FAPL\n");
+    }
+
+    if (H5Pget_driver(crypt_fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not crypt\n");
+    }
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    pb_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == pb_fapl_id) {
+        CRYPT_TEST_FAULT("can't create page buffer FAPL ID\n");
+    }
+
+    pb_vfd_config.fapl_id = crypt_fapl_id;
+    //pb_vfd_config.fapl_id = child_fapl_id;
+
+    if (H5Pset_fapl_pb(pb_fapl_id, &pb_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(pb_fapl_id) != H5FD_PB) {
+        CRYPT_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    if (compare_pb_config_info(pb_fapl_id, &pb_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("pb information mismatch\n");
+    }
+
+    if (compare_crypt_config_info(crypt_fapl_id, &crypt_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("crypt information mismatch\n");
+    }
+
+
+    /*
+     * Copy property list, light compare, and close the copy.
+     * Helps test driver-implemented FAPL-copying and library ID management.
+     */
+
+    pb_fapl_id_cpy = H5Pcopy(pb_fapl_id);
+    if (H5I_INVALID_HID == pb_fapl_id_cpy) {
+        CRYPT_TEST_FAULT("can't copy pb FAPL\n");
+    }
+
+    if (compare_pb_config_info(pb_fapl_id_cpy, &pb_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("pb copy information mismatch\n");
+    }
+
+    if (H5Pclose(pb_fapl_id_cpy) < 0) {
+        CRYPT_TEST_FAULT("can't close pb fapl copy\n");
+    }
+
+
+
+    crypt_fapl_id_cpy = H5Pcopy(crypt_fapl_id);
+    if (H5I_INVALID_HID == crypt_fapl_id_cpy) {
+        CRYPT_TEST_FAULT("can't copy crypt FAPL\n");
+    }
+    if (compare_crypt_config_info(crypt_fapl_id_cpy, &crypt_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("crypt copy information mismatch\n");
+    }
+    if (H5Pclose(crypt_fapl_id_cpy) < 0) {
+        CRYPT_TEST_FAULT("can't close crypt fapl copy\n");
+    }
+
+
+    /*
+     * Proceed with test. Create file.
+     */
+    file_id = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, pb_fapl_id);
+    if (file_id < 0) {
+        CRYPT_TEST_FAULT("can't create file\n");
+    }
+
+
+    /*
+     * Check driver from file
+     */
+
+    fapl_id_out = H5Fget_access_plist(file_id);
+
+    if (H5I_INVALID_HID == fapl_id_out) {
+        CRYPT_TEST_FAULT("can't get file's FAPL\n");
+    }
+
+    if (H5Pget_driver(fapl_id_out) != H5FD_PB) {
+        CRYPT_TEST_FAULT("wrong file FAPL driver\n");
+    }
+
+    if (compare_pb_config_info(fapl_id_out, &pb_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("information mismatch\n");
+    }
+
+    if (H5Pclose(fapl_id_out) < 0) {
+        CRYPT_TEST_FAULT("can't close file's FAPL\n");
+    }
+
+
+    /*
+     * Create and write the dataset
+     */
+
+    space_id = H5Screate_simple(data->n_dims, data->dims, NULL);
+
+    if (space_id < 0) {
+        CRYPT_TEST_FAULT("can't create dataspace\n");
+    }
+
+    dset_id = H5Dcreate2(file_id, data->dset_name, data->mem_type_id, space_id,
+                         H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+    if (dset_id < 0) {
+        CRYPT_TEST_FAULT("can't create dataset\n");
+    }
+
+    if (H5Dwrite(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, data->buf) < 0) {
+        CRYPT_TEST_FAULT("can't write data to dataset\n");
+    }
+
+    if (crypt_compare_expected_data(file_id, data) < 0) {
+        CRYPT_TEST_FAULT("data mismatch in file - 1\n");
+    }
+
+    /* close the file */
+
+    if (H5Dclose(dset_id) < 0) {
+        CRYPT_TEST_FAULT("can't close dset\n");
+    }
+
+    if (H5Sclose(space_id) < 0) {
+        CRYPT_TEST_FAULT("can't close space\n");
+    }
+
+    if (H5Fclose(file_id) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+
+    /* re-open the file and verify its contents */
+    file_id = H5Fopen(filename, H5F_ACC_RDWR, pb_fapl_id);
+
+    if (file_id < 0) {
+        CRYPT_TEST_FAULT("R/W open on extant file failed\n");
+    }
+
+    if (crypt_compare_expected_data(file_id, data) < 0) {
+        CRYPT_TEST_FAULT("data mismatch in file - 2\n");
+    }
+
+    if (H5Fclose(file_id) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+
+    /* Close FAPLs */
+
+    if (H5Pclose(pb_fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5Pclose(crypt_fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Dclose(dset_id);
+            H5Sclose(space_id);
+            H5Pclose(fapl_id_out);
+            H5Pclose(pb_fapl_id_cpy);
+            H5Pclose(crypt_fapl_id_cpy);
+            H5Pclose(pb_fapl_id);
+            H5Pclose(crypt_fapl_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    }
+
+    return ret_value;
+
+} /* end run_crypt_test() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_RO_test
+ *
+ * Purpose:     Verify page buffer / crypt VFDs with the Read-Only access 
+ *              flag.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Attempt read-only opening of file that eithr does or
+ *              does not exist.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id)
+{
+    char                     filename[1024];
+    H5FD_pb_vfd_config_t     pb_vfd_config = 
+    {
+        /* magic          = */ H5FD_PB_CONFIG_MAGIC,
+        /* version        = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size      = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages  = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp             = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY, 
+        /* fapl_id        = */ H5P_DEFAULT  /* will overwrite */
+    };
+    H5FD_crypt_vfd_config_t  crypt_vfd_config =
+    {   
+        /* magic                  = */ H5FD_CRYPT_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ 4096,
+        /* ciphertext_page_size   = */ 4112,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ 0,   /* AES256 */
+        /* cipher_block_size      = */ 16,
+        /* key_size               = */ 32,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ 16,
+        /* mode                   = */ 0,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+    hid_t                    pb_fapl_id       = H5I_INVALID_HID;
+    hid_t                    crypt_fapl_id    = H5I_INVALID_HID;
+    hid_t                    file_id          = H5I_INVALID_HID;
+    int                      ret_value        = 0;
+
+    /* setup the target file name, and delete any existing instance */
+
+    h5_fixname(FILENAME[17], child_fapl_id, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the cryptography file driver */
+
+    crypt_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == crypt_fapl_id) {
+        CRYPT_TEST_FAULT("can't create cryptography FAPL ID\n");
+    }
+
+    crypt_vfd_config.fapl_id = child_fapl_id;
+
+    if (H5Pset_fapl_crypt(crypt_fapl_id, &crypt_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set crypt FAPL\n");
+    }
+
+    if (H5Pget_driver(crypt_fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not crypt\n");
+    }
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    pb_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == pb_fapl_id) {
+        CRYPT_TEST_FAULT("can't create page buffer FAPL ID\n");
+    }
+
+    //pb_vfd_config.fapl_id = crypt_fapl_id;
+    pb_vfd_config.fapl_id = child_fapl_id;
+
+    if (H5Pset_fapl_pb(pb_fapl_id, &pb_vfd_config) < 0) {
+        CRYPT_TEST_FAULT("can't set pb FAPL\n");
+    }
+
+    if (H5Pget_driver(pb_fapl_id) != H5FD_PB) {
+        CRYPT_TEST_FAULT("set FAPL not PB\n");
+    }
+#if 0
+    if (H5Pset_small_data_block_size(pb_fapl_id, 0) < 0) {
+        CRYPT_TEST_FAULT("set pb FAPL small data block size = 0\n");
+    }
+
+    if (H5Pset_sieve_buf_size(pb_fapl_id, 0) < 0) {
+        CRYPT_TEST_FAULT("set pb FAPL siefe buf size = 0\n");
+    }
+#endif
+
+    /* Attempt R/O open when target file doesn't exist.
+     * Should fail.
+     */
+
+    H5E_BEGIN_TRY
+    {
+        file_id = H5Fopen(filename, H5F_ACC_RDONLY, pb_fapl_id);
+    }
+    H5E_END_TRY
+
+    if (file_id >= 0) {
+        CRYPT_TEST_FAULT("R/O open on nonexistent file unexpectedly successful\n");
+    }
+
+
+    /* Attempt R/O open when file exists
+     */
+
+    /* For now, attempt to create the test file with pb_vfd_config.  May
+     * have to revisit this.
+     */
+    if (crypt_create_single_file_at(filename, pb_fapl_id, data) < 0) {
+        CRYPT_TEST_FAULT("can't create file\n");
+    }
+
+    // file_id = H5Fopen(filename, H5F_ACC_RDWR, pb_fapl_id);
+    file_id = H5Fopen(filename, H5F_ACC_RDONLY, pb_fapl_id);
+
+    if (file_id < 0) {
+        CRYPT_TEST_FAULT("R/O open on extant file failed\n");
+    }
+
+    if (crypt_compare_expected_data(file_id, data) < 0) {
+        CRYPT_TEST_FAULT("data mismatch in file\n");
+    }
+
+    if (H5Fclose(file_id) < 0) {
+        CRYPT_TEST_FAULT("can't close file(s)\n");
+    }
+
+    file_id = H5I_INVALID_HID;
+
+    /* Cleanup
+     */
+
+    if (H5Pclose(crypt_fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close crypt FAPL ID\n");
+    }
+
+    crypt_fapl_id = H5I_INVALID_HID;
+
+    if (H5Pclose(pb_fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close pb FAPL ID\n");
+    }
+
+    pb_fapl_id = H5I_INVALID_HID;
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(crypt_fapl_id);
+            H5Pclose(pb_fapl_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    }
+
+    return ret_value;
+
+} /* end crypt_RO_test() */
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_create_single_file_at
+ *
+ * Purpose:     Create a file, optionally w/ dataset.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description:
+ *              Create a an encrypted file at the given location with 
+ *              the given FAPL, and write data as defined in `data` in 
+ *              a pre-determined location in the file.
+ *
+ *              If the dataset definition pointer is NULL, no data is 
+ *              written to the file.
+ *
+ *              Will always overwrite an existing file with the given
+ *              name/path.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_create_single_file_at(const char *filename, hid_t fapl_id, const struct crypt_dataset_def *data)
+{
+    hid_t file_id   = H5I_INVALID_HID;
+    hid_t space_id  = H5I_INVALID_HID;
+    // hid_t dcpl_id   = H5I_INVALID_HID;
+    // hid_t fcpl_id   = H5I_INVALID_HID;
+    hid_t dset_id   = H5I_INVALID_HID;
+    int   ret_value = 0;
+
+#if 0
+    fcpl_id = H5Pcreate(H5P_FILE_CREATE);
+
+    if (fcpl_id < 0) {
+        CRYPT_TEST_FAULT("can't create file creation property list\n");
+    }
+
+    if ( H5Pset_file_space_strategy(fcpl_id, H5F_FSPACE_STRATEGY_PAGE, FALSE, 1) < 0 ) {
+        CRYPT_TEST_FAULT("can't set file space strategy on PCPL\n");
+    }
+#endif
+
+    if (filename == NULL || *filename == '\0') {
+        CRYPT_TEST_FAULT("filename is invalid\n");
+    }
+    /* TODO: sanity-check fapl id? */
+
+    file_id = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+
+    if (file_id < 0) {
+        CRYPT_TEST_FAULT("can't create file\n");
+    }
+
+    if (data) {
+
+        /* TODO: sanity-check data, if it exists? */
+
+        space_id = H5Screate_simple(data->n_dims, data->dims, NULL);
+
+        if (space_id < 0) {
+            CRYPT_TEST_FAULT("can't create dataspace\n");
+        }
+#if 0
+        dcpl_id = H5Pcreate(H5P_DATASET_CREATE);
+
+        if (dcpl_id < 0) {
+            CRYPT_TEST_FAULT("can't create dataset creation property list\n");
+        }
+
+        if ( H5Pset_layout(dcpl_id, H5D_COMPACT) < 0 ) {
+
+            CRYPT_TEST_FAULT("can't set compact layout\n");
+        }
+#endif
+        dset_id = H5Dcreate2(file_id, data->dset_name, data->mem_type_id, space_id,
+                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+
+        if (dset_id < 0) {
+            CRYPT_TEST_FAULT("can't create dataset\n");
+        }
+
+        if (H5Dwrite(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, data->buf) < 0) {
+            CRYPT_TEST_FAULT("can't write data to dataset\n");
+        }
+
+        if (H5Dclose(dset_id) < 0) {
+            CRYPT_TEST_FAULT("can't close dset\n");
+        }
+
+        if (H5Sclose(space_id) < 0) {
+            CRYPT_TEST_FAULT("can't close space\n");
+        }
+#if 0
+        if (H5Pclose(dcpl_id) < 0) {
+            CRYPT_TEST_FAULT("can't close dcpl\n");
+        }
+#endif
+        if (crypt_compare_expected_data(file_id, data) < 0) {
+            CRYPT_TEST_FAULT("data mismatch in file\n");
+        }
+
+        if (H5Fclose(file_id) < 0) {
+            CRYPT_TEST_FAULT("can't close file\n");
+        }
+
+        /* re-open the file and verify its contents */
+        file_id = H5Fopen(filename, H5F_ACC_RDWR, fapl_id);
+
+        if (file_id < 0) {
+            CRYPT_TEST_FAULT("R/W open on extant file failed\n");
+        }
+
+        if (crypt_compare_expected_data(file_id, data) < 0) {
+            CRYPT_TEST_FAULT("data mismatch in file\n");
+        }
+    } /* end if data definition is provided */
+
+    if (H5Fclose(file_id) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            // H5Pclose(dcpl_id);
+            H5Dclose(dset_id);
+            H5Sclose(space_id);
+            H5Fclose(file_id);
+        }
+        H5E_END_TRY
+    } /* end if error */
+
+    return ret_value;
+
+} /* end crypt_create_single_file_at() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_compare_expected_data
+ *
+ * Purpose:     Compare data within a predermined dataset.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Read data from the file at a predetermined location, and
+ *              compare its contents byte-for-byte with that expected in
+ *              the `data` definition structure.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+crypt_compare_expected_data(hid_t file_id, const struct crypt_dataset_def *data)
+{
+    hid_t  dset_id = H5I_INVALID_HID;
+    int    buf[PB_DS_SIZE][PB_DS_SIZE];
+    int    expected[PB_DS_SIZE][PB_DS_SIZE];
+    size_t i         = 0;
+    size_t j         = 0;
+    int    ret_value = 0;
+
+    if (sizeof((void *)buf) != sizeof(data->buf)) {
+        CRYPT_TEST_FAULT("invariant size of expected data does not match that received!\n");
+    }
+
+    memcpy(expected, data->buf, sizeof(expected));
+
+    dset_id = H5Dopen2(file_id, data->dset_name, H5P_DEFAULT);
+
+    if (dset_id < 0) {
+        CRYPT_TEST_FAULT("can't open dataset\n");
+    }
+
+    if (H5Dread(dset_id, data->mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, (void *)buf) < 0) {
+        CRYPT_TEST_FAULT("can't read dataset\n");
+    }
+
+    for (i = 0; i < CRYPT_DS_SIZE; i++) {
+        for (j = 0; j < CRYPT_DS_SIZE; j++) {
+            if (buf[i][j] != expected[i][j]) {
+                CRYPT_TEST_FAULT("mismatch in expected data\n");
+            }
+        }
+    }
+
+    if (H5Dclose(dset_id) < 0) {
+        CRYPT_TEST_FAULT("can't close dataset\n");
+    }
+
+done:
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Dclose(dset_id);
+        }
+        H5E_END_TRY
+    }
+
+    return ret_value;
+
+} /* end crypt_compare_expected_data() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    test_crypt
+ *
+ * Purpose:     Tests the encryption VFD
+ *
+ *              This is the main function for all encryption VFD specific
+ *              tests.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static herr_t
+test_crypt(void)
+{
+    int                         buf[PB_DS_SIZE][PB_DS_SIZE];
+    hsize_t                     dims[2]       = {CRYPT_DS_SIZE, CRYPT_DS_SIZE};
+    hid_t                       child_fapl_id = H5I_INVALID_HID;
+    int                         i             = 0;
+    int                         j             = 0;
+    struct crypt_dataset_def    data;
+
+    /* pre-fill data buffer to write */
+    for (i = 0; i < CRYPT_DS_SIZE; i++) {
+        for (j = 0; j < CRYPT_DS_SIZE; j++) {
+            buf[i][j] = i * 100 + j;
+        }
+    }
+
+    /* Dataset info */
+    data.buf         = (void *)buf;
+    data.mem_type_id = H5T_NATIVE_INT;
+    data.dims        = dims;
+    data.n_dims      = 2;
+    data.dset_name   = CRYPT_DATASET_NAME;
+
+    TESTING("Encrypting VFD -- Stand Alone");
+
+    /* AES256 */
+
+    if ( test_crypt_fapl() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_create() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_create_and_write() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_verify_create_and_encryption() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_2pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_3pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_15pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_16pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_17pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_18pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_32pages() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_33pages() != 0 )
+        TEST_ERROR;
+
+    /* TWOFISH */
+
+    if ( crypt_test_create_and_write_twofish() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_verify_create_and_encryption_twofish() != 0 )
+        TEST_ERROR;
+
+    if ( crypt_test_write_17pages_twofish() != 0 )
+        TEST_ERROR;
+
+    PASSED();
+
+
+    TESTING("Encrypting VFD -- with Page BUffer VFD");
+
+    /* Stand-in for manual FAPL creation
+     * Enables verification with arbitrary VFDs via `make check-vfd`
+     *
+     * Note: Due to cache coherency concerns, the page buffer VFD
+     *       is incompatible with parallel HDF5 -- test code will
+     *       have to be modified to reflect this at some point.
+     *
+     *                                       -- JRM
+     */
+    child_fapl_id = h5_fileaccess();
+    if (child_fapl_id < 0) {
+        TEST_ERROR;
+    }
+#if 0
+    fprintf(stderr, "\n\nCalling crypt_RO_test() *************************** \n");
+#endif
+    /* Test Read-Only access, including when the file does not exist.
+     */
+
+    if (crypt_RO_test(&data, child_fapl_id) < 0) {
+
+        TEST_ERROR;
+    }
+
+
+    /* Test file creation, utilizing different child FAPLs (default vs.
+     * specified), logfile, and Write Channel error ignoring behavior.
+     */
+    for (i = 0; i < 2; i++) {
+
+        hid_t test_child_fapl_id;
+
+        test_child_fapl_id = (i > 0) ? child_fapl_id : H5P_DEFAULT;
+#if 0
+        fprintf(stderr, "\n\nCalling run_crypt_test() *************************** \n");
+#endif
+        if ( run_crypt_test(&data, test_child_fapl_id) < 0 ) {
+
+            TEST_ERROR;
+        }
+
+    } /* end for child fapl definition */
+
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* end test_crypt() */
+
+#undef CRYPT_TEST_FAULT
+
+#endif /* encrypting VFD test code */
+
+
 /*****************************************************************************
  *
  * Function    setup_rand()
@@ -5874,7 +10834,7 @@ int
 main(void)
 {
     char *env_h5_drvr = NULL;
-    int   nerrors     = 0;
+    int         nerrors = 0;
 
     /* Don't run VFD tests when HDF5_DRIVER is set. These tests expect a
      * specific VFD to be set and HDF5_DRIVER being set can interfere
@@ -5905,6 +10865,8 @@ main(void)
     nerrors += test_windows() < 0 ? 1 : 0;
     nerrors += test_ros3() < 0 ? 1 : 0;
     nerrors += test_splitter() < 0 ? 1 : 0;
+    nerrors += test_pb() < 0 ? 1 : 0;
+    nerrors += test_crypt() < 0 ? 1 : 0;
     nerrors += test_vector_io("sec2") < 0 ? 1 : 0;
     nerrors += test_vector_io("stdio") < 0 ? 1 : 0;
     nerrors += test_selection_io("sec2") < 0 ? 1 : 0;
