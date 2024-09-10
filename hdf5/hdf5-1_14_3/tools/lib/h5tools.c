@@ -93,6 +93,9 @@ const char *drivernames[] = {
     [HDFS_VFD_IDX]      = "hdfs",
     [SUBFILING_VFD_IDX] = H5FD_SUBFILING_NAME,
     [ONION_VFD_IDX]     = "onion",
+#if 1 /* JRM */
+    [CRYPT_VFD_IDX]     = "crypt"
+#endif /* JRM */    
 };
 
 #define NUM_VOLS    (sizeof(volnames) / sizeof(volnames[0]))
@@ -608,6 +611,64 @@ h5tools_set_fapl_vfd(hid_t fapl_id, h5tools_vfd_info_t *vfd_info)
                 if (H5Pset_fapl_onion(fapl_id, (const H5FD_onion_fapl_info_t *)vfd_info->info) < 0)
                     H5TOOLS_GOTO_ERROR(FAIL, "H5Pset_fapl_onion() failed");
             }
+#if 1 /* JRM */
+
+            else if (!strcmp(vfd_info->u.name, drivernames[CRYPT_VFD_IDX])) {
+
+                H5FD_pb_vfd_config_t     pb_vfd_config =
+                {
+                    /* magic          = */ H5FD_PB_CONFIG_MAGIC,
+                    /* version        = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+                    /* page_size      = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+                    /* max_num_pages  = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+                    /* rp             = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+                    /* fapl_id        = */ H5P_DEFAULT  /* will overwrite */
+                };
+                H5FD_crypt_vfd_config_t  crypt_vfd_config =
+                {
+                    /* magic                  = */ H5FD_CRYPT_MAGIC,
+                    /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+                    /* plaintext_page_size    = */ 4096,
+                    /* ciphertext_page_size   = */ 4112,
+                    /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+                    /* cipher                 = */ 0,   /* AES256 */
+                    /* cipher_block_size      = */ 16,
+                    /* key_size               = */ 32,
+                    /* key                    = */ H5FD_CRYPT_TEST_KEY,
+                    /* iv_size                = */ 16,
+                    /* mode                   = */ 0,
+                    /* fapl_id                = */ H5P_DEFAULT
+                };
+                hid_t                    crypt_fapl_id    = H5I_INVALID_HID;
+
+                /* don't use vfd_info -- just hard code the encryption VFD falp */
+
+                crypt_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+                if (H5I_INVALID_HID == crypt_fapl_id) {
+                    H5TOOLS_GOTO_ERROR(FAIL, "can't create cryptography FAPL ID\n");
+                }
+
+                if (H5Pset_fapl_crypt(crypt_fapl_id, &crypt_vfd_config) < 0) {
+                    H5TOOLS_GOTO_ERROR(FAIL, "can't set crypt FAPL\n");
+                }
+
+                if (H5Pget_driver(crypt_fapl_id) != H5FD_CRYPT) {
+                    H5TOOLS_GOTO_ERROR(FAIL, "set FAPL not crypt\n");
+                }
+
+                pb_vfd_config.fapl_id = crypt_fapl_id;
+
+                if (H5Pset_fapl_pb(fapl_id, &pb_vfd_config) < 0) {
+                    H5TOOLS_GOTO_ERROR(FAIL, "can't set pb FAPL\n");
+                }
+
+                if (H5Pget_driver(fapl_id) != H5FD_PB) {
+                    H5TOOLS_GOTO_ERROR(FAIL, "set FAPL not PB\n");
+                }
+            }
+
+#endif /* JRM */
             else {
                 /*
                  * Try to load VFD plugin.

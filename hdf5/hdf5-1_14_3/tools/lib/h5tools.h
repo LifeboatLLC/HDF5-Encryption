@@ -606,6 +606,9 @@ typedef enum {
     HDFS_VFD_IDX,
     SUBFILING_VFD_IDX,
     ONION_VFD_IDX,
+#if 1 /* JRM */
+    CRYPT_VFD_IDX,
+#endif /* JRM */
 } driver_idx;
 
 /* The following include, h5tools_str.h, must be after the
