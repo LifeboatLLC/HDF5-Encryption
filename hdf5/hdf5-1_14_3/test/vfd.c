@@ -7693,7 +7693,6 @@ run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id)
     }
 
     pb_vfd_config.fapl_id = crypt_fapl_id;
-    //pb_vfd_config.fapl_id = child_fapl_id;
 
     if (H5Pset_fapl_pb(pb_fapl_id, &pb_vfd_config) < 0) {
         CRYPT_TEST_FAULT("can't set pb FAPL\n");
@@ -7944,8 +7943,7 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id)
         CRYPT_TEST_FAULT("can't create page buffer FAPL ID\n");
     }
 
-    //pb_vfd_config.fapl_id = crypt_fapl_id;
-    pb_vfd_config.fapl_id = child_fapl_id;
+    pb_vfd_config.fapl_id = crypt_fapl_id;
 
     if (H5Pset_fapl_pb(pb_fapl_id, &pb_vfd_config) < 0) {
         CRYPT_TEST_FAULT("can't set pb FAPL\n");
