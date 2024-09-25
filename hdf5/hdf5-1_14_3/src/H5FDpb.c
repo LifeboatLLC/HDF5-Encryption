@@ -30,19 +30,19 @@
 #include "H5Pprivate.h"   /* Property lists           */
 
 /** Semi-unique constant used to help identify Page Header structure pointers */
-#define H5FD_PB_PAGEHEADER_MAGIC           0x504202
+#define H5FD_PB_PAGEHEADER_MAGIC                0x504202
 
 /** Semi-unique constant used to help identify Hash Table structure pointers */
-#define H5FD_PB_HASH_TABLE_MAGIC            0x504203
+#define H5FD_PB_HASH_TABLE_MAGIC                0x504203
 
 /** Semi-unique constant used to help identify Replacement Policy structure pointers */
-#define H5FD_PB_RP_MAGIC                    0x504204
+#define H5FD_PB_RP_MAGIC                        0x504204
 
 /** The version of the H5FD_pb_vfd_config_t structure used */
-#define H5FD_CURR_PB_VFD_CONFIG_VERSION     1
+#define H5FD_CURR_PB_VFD_CONFIG_VERSION         1
 
 /** The default page buffer page size in bytes */
-#define H5FD_PB_DEFAULT_PAGE_SIZE                   4096
+#define H5FD_PB_DEFAULT_PAGE_SIZE               4096
 
 /** The default maximum number of pages resident in the page buffer at any one time */
 #define H5FD_PB_DEFAULT_MAX_NUM_PAGES           64
@@ -51,7 +51,7 @@
 #define H5FD_PB_DEFAULT_REPLACEMENT_POLICY      0 /* 0 = Least Recently Used */
 
 /** The default number of buckets in the hash table */
-#define H5FD_PB_DEFAULT_NUM_HASH_BUCKETS    16
+#define H5FD_PB_DEFAULT_NUM_HASH_BUCKETS        16
 
 /******************************************************************************
  *Bitfield for the PageHeader flags
@@ -73,14 +73,14 @@
  *      Used to indicate if the PageHeader is currently being read from
  *      (if marked 1 it's being read from)
  *
- * WRITE_FLAG u
- *      sed to indicate if the PageHeader is currently being written to
+ * WRITE_FLAG 
+ *      set to indicate if the PageHeader is currently being written to
  *      (if marked 1 it's being written to)
  *
  * INVALID_FLAG
  *      Used to indicated if the PageHeader has been marked as invalid.
  *      A PageHeader is marked as invalid when a page is written straight
- *      through to the file and a version of the page is kept in the Page
+ *      through to the file and a version of the page is currently in the Page
  *      Buffer. This makes the version in the Page Buffer out of data, and the
  *      INVALID_FLAG is used to make sure this version is never written to the
  *      file.
@@ -116,7 +116,7 @@ static hid_t H5FD_PB_g = 0;
  *
  * hash_code (uint32_t):
  *      Key used to determine which bucket in the hash table this page header
- *      gets stored in. The hash code is calculated by taking the page offset
+ *      gets stored in. The hash code is calculated by taking the page addr
  *      and cutting off the bottom bits, then right shifting the remaining bits
  *      to get the page number (this is computationally easier than division).
  *      Then the page number is modded by the number of buckets in the hash
@@ -150,8 +150,8 @@ static hid_t H5FD_PB_g = 0;
  *          - 0b00001000: write     (queued up to be written)
  *          - 0b00010000: invalid   (contains old data, page must be discarded)
  *
- * page_offset (haddr_t):
- *      Integer value indicating the offset of the page from the beginning of
+ * page_addr (haddr_t):
+ *      Integer value indicating the addr of the page from the beginning of
  *      the file in bytes. This is used to determine the location of the page,
  *      and to calculate the hash key.
  *
@@ -174,7 +174,7 @@ typedef struct H5FD_pb_pageheader_t {
     struct H5FD_pb_pageheader_t * rp_next_ptr;
     struct H5FD_pb_pageheader_t * rp_prev_ptr;
     int32_t             flags;
-    haddr_t             page_offset;
+    haddr_t             page_addr;
     H5FD_mem_t          type;
     unsigned char       page[];
 } H5FD_pb_pageheader_t;
@@ -210,9 +210,11 @@ typedef struct H5FD_pb_pageheader_t {
  *
  * Hash Table Description:
  *      A structure that contains an array of doubly linked lists used to store
- *      the page headers that have an active page in the buffer. The hash table
- *      is used to quickly retrieve a page header given a page offset, to
- *      satisfy an I/O request. The number of buckets must be a power of 2.
+ *      the page headers that have an active page in the buffer. Random I/O 
+ *      requests come in and the page buffer turns them into paged I/O requests.
+ *      When there is a partial page in the request, the full page that 
+ *      contains the partial page must be loaded and those full pages are kept
+ *      here in the hash table. The number of buckets must be a power of 2.
  *
  *      NOTE: The number of buckets in the hash table is currently fixed, but
  *      will be made configurable in future versions.
@@ -221,15 +223,16 @@ typedef struct H5FD_pb_pageheader_t {
  *      index:
  *          An integer value used to determine which bucket in the hash table
  *          a page header should be stored in based on its hash code.
+ * 
+ *      num_pages_in_bucket:
+ *          An integer value used to keep track of the number of pages that are
+ *          stored in the bucket. This is a statistic used for debugging and
+ *          performance analysis.
  *
  *      ht_head_ptr:
  *          Pointer to the head of the doubly linked list of page headers in
  *          the bucket. The head is where page headers are inserted into the
  *          bucket.
- *
- *      ht_tail_ptr:
- *          Pointer to the tail of the doubly linked list of page headers in
- *          the bucket.
  *
  * Replacement Policy Description:
  *      A doubly linked list data structure used to store the page headers and
@@ -359,6 +362,7 @@ typedef struct H5FD_pb_t {
     H5FD_pb_pageheader_t     *rp_head_ptr;
     H5FD_pb_pageheader_t     *rp_tail_ptr;
     int64_t                   rp_pageheader_count;
+
 
     /* eoa management fields */
     haddr_t                  eoa_up;
@@ -525,28 +529,27 @@ static const H5FD_class_t H5FD_pb_g = {
 
 herr_t   H5FD__pb_flush_page(H5FD_pb_t * file_ptr, hid_t dxpl_id, H5FD_pb_pageheader_t *pageheader);
 herr_t   H5FD__pb_invalidate_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
-H5FD_pb_pageheader_t * H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t offset, 
+H5FD_pb_pageheader_t * H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t addr, 
                                                           uint32_t hash_code);
 H5FD_pb_pageheader_t* H5FD__pb_get_pageheader(H5FD_pb_t *file_ptr, H5FD_mem_t type, hid_t dxpl_id, 
-                                              haddr_t offset, uint32_t hash_code);
-uint32_t H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t offset);
+                                              haddr_t addr, uint32_t hash_code);
+uint32_t H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t addr);
 
 /* Hash Table Functions */
-herr_t   H5FD__pb_ht_insert_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_ht_remove_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_ht_prepend_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_ht_append_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-H5FD_pb_pageheader_t *H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t offset, uint32_t hash_code);
+herr_t   H5FD__pb_ht_insert_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+herr_t   H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+H5FD_pb_pageheader_t *H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, uint32_t hash_code);
 
 /* Replacement Policy Functions */
-herr_t   H5FD__pb_rp_insert_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_rp_prepend_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_rp_append_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_rp_remove_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-herr_t   H5FD__pb_rp_touch_pageheader(H5FD_pb_t *pb, H5FD_pb_pageheader_t *pageheader);
-H5FD_pb_pageheader_t *H5FD__pb_rp_evict_pageheader(H5FD_pb_t *pb);
+herr_t   H5FD__pb_rp_insert_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+herr_t   H5FD__pb_rp_prepend_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+herr_t   H5FD__pb_rp_append_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+herr_t   H5FD__pb_rp_remove_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+herr_t   H5FD__pb_rp_touch_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
+H5FD_pb_pageheader_t *H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, uint32_t hash_code);
 
-H5FD_pb_t *H5FD__pb_init_alloc(H5FD_pb_vfd_config_t vfd_config);
+/* Testing Functions */
+haddr_t  *H5FD__pb_rp_eviction_check(H5FD_t *_file, haddr_t *current_rp_addrs);
 
 
 /* Declare a free list to manage the H5FD_pb_t struct */
@@ -731,7 +734,7 @@ H5Pget_fapl_pb(hid_t fapl_id, H5FD_pb_vfd_config_t *config /*out*/)
     if (H5FD_CURR_PB_VFD_CONFIG_VERSION != config->version)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "info-out pointer invalid (version unsafe)");
 
-    /* Pre-set out FAPL ID with intent to replace these values */
+    /* Pre-set out FAPL ID with intent to replace this value */
     config->fapl_id = H5I_INVALID_HID;
 
     /* Check and get the page buffer fapl */
@@ -865,7 +868,7 @@ done:
  * Function:    H5FD__pb_flush
  *
  * Purpose:     Flushes all data from the page buffer, and then flush
- *		the underlying VFD.
+ *		        the underlying VFD.
  *
  * Return:      SUCCEED/FAIL
  *-------------------------------------------------------------------------
@@ -882,12 +885,26 @@ H5FD__pb_flush(H5FD_t *_file, hid_t H5_ATTR_UNUSED dxpl_id, bool closing)
 
     H5FD_PB_LOG_CALL(__func__);
 
+    /* for future reference:  For santity checking, we should have some 
+     * method of verifying that all dirty pages are flushed.  One way 
+     * of doing this would be to track the number of dirty pages in the 
+     * page buffer, and verify that this number is zero when the flush 
+     * is complete.
+     *
+     * An alternative method would be to scan the hash table and verify
+     * that all entries are clean after the flush.
+     *
+     * Other approaches are possible.
+     *
+     * This should be addressed in the production version.
+     *
+     *                                             JRM -- 9/23/24
+     */
+
     /* flush the page buffer */
-#if 0  /* it should be this way */
-    pageheader = file_ptr->rp_head_ptr;
-#else 
+
     pageheader = file_ptr->rp_tail_ptr;
-#endif
+
     while ( pageheader ) {
 
         /* if the page is valid and dirty, flush it */
@@ -901,23 +918,28 @@ H5FD__pb_flush(H5FD_t *_file, hid_t H5_ATTR_UNUSED dxpl_id, bool closing)
         pages_visited++;
 
         pageheader = pageheader->rp_prev_ptr;
-    }
+
+    } /* end while */
+
     assert(pages_visited == file_ptr->rp_pageheader_count);
 
     /* Public API for dxpl "context" */
     if (H5FDflush(file_ptr->file, dxpl_id, closing) < 0)
         HGOTO_ERROR(H5E_VFL, H5E_CANTFLUSH, FAIL, "unable to flush underlying file");
 
+
 done:
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__pb_flush() */
 
+
+
 /*-------------------------------------------------------------------------
  * Function:    H5FD__pb_read
  *
  * Purpose:     Reads SIZE bytes of data from the page buffer and/or the 
- *		underlying VFD, beginning at address ADDR into buffer 
+ *		        underlying VFD beginning at address ADDR, into buffer 
  *              BUF according to data transfer properties in DXPL_ID.
  *
  * Return:      Success:    SUCCEED
@@ -933,19 +955,30 @@ static herr_t
 H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSED dxpl_id, haddr_t addr,
                     size_t size, void *buf)
 {
-    size_t                head_size;
-    size_t                tail_size;
-    haddr_t               head_offset;      /* offset for head page */
-    haddr_t               read_offset;      /* to track pages to be read */
-    size_t                pb_size;          /* size adjusts to page boundaries */
-    uint32_t              hash_code;        /* key for a page in the ht */
-    haddr_t              *page_offset_list = NULL; /* Array of page offsets */
-    uint64_t              list_index;       /* offset for current page */
-    size_t                num_pages;        /* Pages in the read request */
-    uint64_t              pages_remaining;  /* Number of pages left */
-    haddr_t               head_index = 0;   /* index in head page for read */
-    haddr_t               tail_index = 0;   /* index in tail page for read */
-    uint64_t              tail_exists = 0;  /* flag for tail page existence */
+    bool       head_exists        = FALSE;         
+    bool       middle_exists      = FALSE;
+    bool       tail_exists        = FALSE;
+    uint64_t   num_pages          = 0;           /* number of pages in the read request */
+    uint64_t   page_num;                         /* page number of the head page */
+    haddr_t    head_page_addr     = HADDR_UNDEF; /* addr for beginning of the head page */
+    haddr_t    head_start_addr    = HADDR_UNDEF; /* addr for where the write starts in the head page */
+    size_t     head_size          = 0;
+    haddr_t    middle_start_addr  = HADDR_UNDEF;    
+    size_t     middle_size        = 0;
+    uint64_t   middle_page_count  = 0;
+    uint64_t   middle_read_count = 0;            /* used to calculate addrs when multiple middles */
+    uint64_t   middle_check_count = 0;           /* used to calculate addrs when multiple middles */
+    haddr_t    tail_start_addr    = HADDR_UNDEF;
+    size_t     tail_size          = 0;
+    haddr_t    addr_of_remainder;                /* Used to calculate if head, middle, and tails exist */
+    size_t     size_of_remainder;                /* Used to calculate if head, middle, and tails exist */
+    haddr_t    expected_addr;
+    uint32_t   hash_code;
+    size_t     read_count         = 0;           /* total count of all writes */
+    haddr_t    current_addr;                     /* used to track addr for multiple middles */
+    size_t     accumulated_size;                 /* size of straight through read middles */
+    haddr_t    accumulated_addr;                 /* addr for straight through read middles */
+
     H5FD_pb_pageheader_t *head = NULL;
     H5FD_pb_pageheader_t *tail = NULL;
     H5FD_pb_pageheader_t *middle = NULL;
@@ -956,10 +989,10 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
 
     H5FD_PB_LOG_CALL(__func__);
 
-    assert(file_ptr);
-    assert(file_ptr->pub.cls);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(buf);
+    assert( file_ptr );
+    assert( file_ptr->pub.cls );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( buf );
 
     /* Check for overflow conditions */
     if (!H5_addr_defined(addr))
@@ -968,299 +1001,331 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
     if (REGION_OVERFLOW(addr, size))
         HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL, "addr overflow, addr = %llu", (unsigned long long)addr);
 
-    /*******************/
-    /**** Head Case ****/
-    /*******************/
-    if (addr % file_ptr->fa.page_size != 0) {
 
-        /* Adjusts addr back to beginning of page */
-        head_offset = addr - (addr % file_ptr->fa.page_size);
-
-        /* Index for where in head page actual read needs */
-        head_index = addr - head_offset;
+    addr_of_remainder = addr;
+    size_of_remainder = size;
 
 
-        /* make note of the head size
-         *
-         * initially set head_size equal to the number of bytes from the 
-         * beginning of the read to the next page boundary.
-         */
-        head_size = file_ptr->fa.page_size - head_index;
 
-        /* If size is less than the head_size, the head ends before the 
-         * next page boundary.  If so, adjust head_size accordingly.
-         */
-        if ( head_size > size ) {
+    /***** Checks if a head exists *****/
 
-            head_size = size;
+    if ( addr_of_remainder % file_ptr->fa.page_size != 0 ) {
+
+        head_exists = TRUE;
+        page_num = addr / file_ptr->fa.page_size;
+        head_page_addr = page_num * file_ptr->fa.page_size;
+        head_start_addr = head_page_addr + ( addr % file_ptr->fa.page_size );
+        head_size = file_ptr->fa.page_size - ( addr % file_ptr->fa.page_size );
+
+        /* If head is larger then remainder then entire read is in the head */
+        if ( head_size >= size_of_remainder ) {
+
+            head_size = size_of_remainder;
+            size_of_remainder = 0;
+        }
+        else {
+
+            size_of_remainder -= head_size;
+            addr_of_remainder += head_size;
+
+            assert( size_of_remainder > 0 );
+            assert( 0 == ( addr_of_remainder % file_ptr->fa.page_size ) );
         }
 
-        assert(head_size > 0);
-        assert(head_size < file_ptr->fa.page_size);
+        num_pages++; 
+    }
+    
+    assert( ( size_of_remainder == 0 ) || ( 0 == ( addr_of_remainder % file_ptr->fa.page_size )) );
 
 
-        /* Adjusts size to account for adjusting head_offset */
-        pb_size = size + head_index;
 
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, head_offset);
+    /***** Checks if a middle or middles exits *****/
 
-        head = H5FD__pb_ht_search_pageheader(file_ptr, head_offset, hash_code);
+    if ( ( size_of_remainder > 0 ) && ( ( size_of_remainder / file_ptr->fa.page_size ) > 0 )) {
 
-        /* If the head doesn't already exist in the page buffer */
-        if (head == NULL) {
+        middle_exists = TRUE;
+        middle_start_addr = addr_of_remainder;
+        middle_page_count = size_of_remainder / file_ptr->fa.page_size;
+        middle_size = middle_page_count * file_ptr->fa.page_size;
 
-            /* Gets a pageheader to store the page */
-            if ( NULL == (head = H5FD__pb_get_pageheader(file_ptr, type, dxpl_id, head_offset, hash_code)) )
+        assert( middle_size <= size_of_remainder );
+
+        size_of_remainder -= middle_size;
+        addr_of_remainder += middle_size;
+
+        assert( size_of_remainder < file_ptr->fa.page_size );
+        assert( 0 == ( addr_of_remainder % file_ptr->fa.page_size ) );
+
+        num_pages += middle_page_count;
+    }
+
+
+
+    /***** Checks if a tail exists *****/
+
+    if ( size_of_remainder > 0 ) {
+
+        assert( 0 == addr_of_remainder % file_ptr->fa.page_size );
+
+        tail_exists = TRUE;
+        tail_start_addr = addr_of_remainder;
+        tail_size = size_of_remainder;
+
+        num_pages++; 
+    }
+
+
+
+    /***** Check the head, middle(s), and tail sizes and starting addrs *****/
+
+    assert( head_size + middle_size + tail_size == size );
+
+    expected_addr = addr;
+
+    if ( head_exists ) {
+
+        assert( addr == head_start_addr );
+
+        if ( middle_exists || tail_exists ) {
+            
+            assert ( 0 == (( head_start_addr + head_size ) % file_ptr->fa.page_size ) );
+        }
+        else {
+
+            assert( (( head_start_addr + head_size ) - addr ) <= file_ptr->fa.page_size );
+        }
+
+        expected_addr += head_size;        
+    } 
+
+    if ( middle_exists ) {
+
+        assert( middle_start_addr == expected_addr ); 
+
+        expected_addr += middle_size;
+    }
+    
+    if ( tail_exists ) {
+
+        assert( tail_start_addr == expected_addr );
+    } 
+
+
+
+    /***** Performs read operation *****/
+
+
+    /***** Head operations *****/
+
+    if ( head_exists ) {
+
+        hash_code = H5FD__pb_calc_hash_code( file_ptr, head_page_addr );
+
+        head = H5FD__pb_ht_search_pageheader( file_ptr, head_page_addr, hash_code );
+
+        if ( head == NULL ) {
+
+            if ( NULL == ( head = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, head_page_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Head page could not be loaded");
 
-            /* stats update */
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the busy and read flag immediately */
+            head->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
             file_ptr->num_heads++;
-            /* end stats update */
         }
-        /* If head exists update position in replacement policy (rp) list */
         else {
-            H5FD__pb_rp_touch_pageheader(file_ptr, head);
+
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( head );
+            assert( head->magic == H5FD_PB_PAGEHEADER_MAGIC );
+            assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the busy and read flag immediately */
+            head->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
+
+            if ( file_ptr->fa.rp == 0 ) {
+                H5FD__pb_rp_touch_pageheader( file_ptr, head );
+            }
         }
 
-        assert(head);
+        assert( head );
+        assert( head->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-        /* Sets busy and read flags */
-        head->flags |= (H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
+        assert( head->flags & H5FD_PB_BUSY_FLAG );
+        assert( head->flags & H5FD_PB_READ_FLAG );
+        assert( 0 == ( head->flags & H5FD_PB_WRITE_FLAG ) );
+        assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
 
-        assert(head->flags & H5FD_PB_BUSY_FLAG);
-        assert(head->flags & H5FD_PB_READ_FLAG);
+        H5MM_memcpy( buf, head->page + ( head_start_addr - head_page_addr ), head_size );
 
+        /* Resets flags now that the pageheader is done being read */
+        head->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
 
-        /* If the entire read request exists inside of a head page, need to use
-         * the size of the request itself to make sure we only read the exact
-         * section of the page needed to fulfill the read request
-         */
-#if 0
-        if (pb_size < test_vfd_config.page_size) {
-            if (memcpy(buf, head->page + head_index, size) == NULL)
-                perror("Data could not be copied from buffer to head page");
-
-            /* Sets pb_size equal to the page size to not trigger a tail */
-            pb_size = test_vfd_config.page_size;
-        }
-
-        /* Adds the necessary data from the head page to the buffer */
-        if (memcpy(buf, head->page + head_index, test_vfd_config.page_size -
-                    head_index) == NULL)
-            perror("Data could not be copied from head page to buffer");
-#else
-        H5MM_memcpy(buf, head->page + head_index, head_size);
-#endif
-
-        /* Adjusts read offset to next page boundary*/
-        read_offset = head_offset + file_ptr->fa.page_size;
-
-        /* Clears busy and read flags*/
-        head->flags &= ~(H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
-
-    }
-    /* If there is no head the offsets and size remains the same */
-    else {
-        head_size = 0;
-        head_offset = addr;
-        read_offset = addr;
-        pb_size = size;
-    }
-
-    /**************************************************************/
-    /**** Checks for tail and gets number of pages and offsets ****/
-    /**************************************************************/
-
-    if ( 0 != (tail_size = ((size - head_size) % file_ptr->fa.page_size)) ) {
-
-        /* Adjusts size to end on next page boundary */
-        tail_index = file_ptr->fa.page_size - (pb_size % file_ptr->fa.page_size);
-
-        pb_size += tail_index;
-
-        tail_exists = 1;
-
+        read_count++;
     }
 
 
-    /* Calculates the number of pages needed for the request */
-    num_pages = pb_size / file_ptr->fa.page_size;
+    /***** Middle operations *****/
 
-    pages_remaining = (uint64_t)(num_pages);
+    if ( middle_exists ) {
 
-    /* If there is a head page it has already been accounted for */
-    if (head != NULL) {
+        current_addr = middle_start_addr;
+        accumulated_size = 0;
+        accumulated_addr = HADDR_UNDEF;
 
-        pages_remaining--;
+        /* Iterates through all middles */
+        for ( middle_check_count = 0; middle_check_count < middle_page_count; middle_check_count++ ) {
 
-        if ( head_size == size ) { /* we are done -- set pages_remaining = 0 */
+            hash_code = H5FD__pb_calc_hash_code( file_ptr, current_addr );
 
-            pages_remaining = 0;
+            middle = H5FD__pb_ht_search_pageheader( file_ptr, current_addr, hash_code );
+
+            /* If the middle doesn't exist in ht then it gets added to accumulator*/
+            if ( middle == NULL ) {
+
+                if ( accumulated_size == 0 )
+                    accumulated_addr = current_addr;
+
+                accumulated_size += file_ptr->fa.page_size;
+
+            }
+
+            /**
+             * If the middle does exist in the ht:
+             * 
+             * 1. Read any accumulated pages from the file or lower VFD to the buffer.
+             * 2. Touch the pageheader to update the replacement policy.
+             * 3. Read (copy) the page from the pageheader into the buffer.
+             */
+            else {
+
+                if ( accumulated_size > 0 ) {
+
+                    if ( H5FDread( file_ptr->file, type, dxpl_id, accumulated_addr, accumulated_size, 
+                                   (void *)(((char *)buf ) + head_size + 
+                                   ( middle_read_count * file_ptr->fa.page_size ))) < 0 ) {
+                        HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, \
+                                    "Middle page could not be read from file or lower VFD");
+                    }
+
+                    middle_read_count += accumulated_size / file_ptr->fa.page_size;
+                    accumulated_size = 0;
+                }
+
+                assert( middle );
+                assert( middle->magic == H5FD_PB_PAGEHEADER_MAGIC );
+
+                /* Check the pageheader is not busy or invalid before we flag it busy to use it */
+                assert( 0 == ( middle->flags & H5FD_PB_BUSY_FLAG ) );
+                assert( 0 == ( middle->flags & H5FD_PB_INVALID_FLAG ) );
+
+                /* Sets the busy and read flag */
+                middle->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
+
+                assert( middle->flags & H5FD_PB_BUSY_FLAG );
+                assert( middle->flags & H5FD_PB_READ_FLAG );
+                assert( 0 == ( middle->flags & H5FD_PB_INVALID_FLAG ) );
+
+                if ( file_ptr->fa.rp == 0 ) {
+                   H5FD__pb_rp_touch_pageheader( file_ptr, middle );
+                }
+
+                H5MM_memcpy( (void *)(((char *)buf ) + head_size + (middle_check_count * file_ptr->fa.page_size)),
+                             middle->page, file_ptr->fa.page_size );
+
+                middle_read_count++;
+
+                middle->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
+
+            }            
+
+            current_addr += file_ptr->fa.page_size;
         }
-    }
 
-    if ( pages_remaining > 0 ) {
-
-        if ( NULL == (page_offset_list = (haddr_t *)calloc(num_pages, sizeof(haddr_t))) )
-             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, FAIL, "Page offset list could not be allocated");
-
-        /* Gets the offset for each page in the request */
-        for (uint64_t i = 0; i < pages_remaining; i++) {
-            page_offset_list[i] = read_offset;
-            read_offset += file_ptr->fa.page_size;
-        }
-    }
-
-
-   /*********************/
-    /**** Middle Case ****/
-    /*********************/
-
-    /* Checks if the middle pages already exist in the buffer.
-     * If they don't, read them directly from the file (or lower VFD).
-     * If they do exist, read them from the page buffer.
-     */
-    if ( pages_remaining >= 1 ) {
-
-        list_index = 0;
-        read_offset = page_offset_list[list_index];
-    }
-
-    while (pages_remaining >= 1) {
-
-        /* Will break out of loop if the last page is a tail page, but if last
-         * page is a middle page, will perform steps here for it
-         */
-        if (pages_remaining == 1) {
-            if (tail_exists == 1)
-                break;
+        /* If any accumulated pages haven't been read when the loop ends read them now. */
+        if ( accumulated_size > 0) {
+                
+                if ( H5FDread( file_ptr->file, type, dxpl_id, accumulated_addr, accumulated_size, 
+                            (void *)(((char *)buf) + head_size + ( middle_read_count * file_ptr->fa.page_size ))) < 0 )
+                    HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, \
+                                "Middle page could not be read from file or lower VFD");
         }
 
-        /* Check if the page exists in the page buffer */
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, page_offset_list[list_index]);
-
-        middle = H5FD__pb_ht_search_pageheader(file_ptr, page_offset_list[list_index], 
-                                               hash_code);
-
-        /* If the page doesn't exist in the page buffer */
-        if (middle == NULL) {
-
-            /* Read page directly from file (or lower VFD) into buf */
-#if 0
-            if (pread(file_ptr, buf + (list_index * test_vfd_config.page_size),
-                        test_vfd_config.page_size,
-                        page_offset_list[list_index]) !=
-                        test_vfd_config.page_size)
-                perror("Middle page could not be read from file or lower VFD");
-#else
-            if (H5FDread(file_ptr->file, type, dxpl_id, page_offset_list[list_index], 
-                         file_ptr->fa.page_size, 
-                         (void *)(((char *)buf) + (list_index * file_ptr->fa.page_size))) < 0)
-                HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, \
-                            "Middle page could not be read from file or lower VFD");
-#endif
-        }
-        /* If the page does exist in the page buffer */
-        else {
-            /* Ensures there is a pageheader for the page */
-            assert(middle);
-
-            /* Sets busy and read flags */
-            middle->flags |= (H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
-
-            assert(middle->flags & H5FD_PB_BUSY_FLAG);
-            assert(middle->flags & H5FD_PB_READ_FLAG);
-
-            /* Update position in rp list */
-            H5FD__pb_rp_touch_pageheader(file_ptr, middle);
-
-            /* Read page from page buffer */
-#if 0
-            if (memcpy(buf, middle->page, test_vfd_config.page_size) == NULL)
-                perror("Middle could not be read from page buffer to buf");
-#else
-            H5MM_memcpy(buf, middle->page, file_ptr->fa.page_size);
-#endif
-
-            middle->flags &= ~(H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
-        }
-        /* stats update */
-        file_ptr->total_middle_reads++;
-        /* end stats update */
-
-        pages_remaining--;
-        list_index++;
-        read_offset = page_offset_list[list_index];
-
-        /* Clears busy and read flags */
+        file_ptr->total_middle_reads += middle_page_count;
+        read_count += middle_page_count;
     }
 
 
-    /*******************/
-    /**** Tail Case ****/
-    /*******************/
+    /***** Tail operations *****/
 
-    if (tail_exists == 1) {
+    if ( tail_exists ) {
 
-        assert(pages_remaining == 1);
+        hash_code = H5FD__pb_calc_hash_code( file_ptr, tail_start_addr );
 
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, read_offset);
+        tail = H5FD__pb_ht_search_pageheader( file_ptr, tail_start_addr, hash_code );
 
-        /* Checks if the tail already exists in the page buffer */
-        tail = H5FD__pb_ht_search_pageheader(file_ptr, read_offset, hash_code);
+        if ( tail == NULL ) {
 
-        /* If the tail does not exist in the page buffer */
-        if (tail == NULL) {
-
-            /* tail = H5FD__pb_get_pageheader(file_ptr, pb, read_offset, hash_code); */
-
-            if ( NULL == (tail = H5FD__pb_get_pageheader(file_ptr, type, dxpl_id, read_offset, hash_code)) )
+            if ( NULL == ( tail = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, tail_start_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Tail page could not be loaded");
 
-            /* stats update */
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the pagehader as busy and read */
+            tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
             file_ptr->num_tails++;
-            /* end stats update */
         }
-        /* If tail already exists update position in rp list */
         else {
-            H5FD__pb_rp_touch_pageheader(file_ptr, tail);
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( tail );
+            assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
+            assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the pagehader as busy and read */
+            tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
+
+            if ( file_ptr->fa.rp == 0 ) {
+                H5FD__pb_rp_touch_pageheader( file_ptr, tail );
+            }
         }
 
-        assert(tail);
+        assert( tail );
+        assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-        /* Sets busy and read flags */
-        tail->flags |= (H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
+        assert( tail->flags & H5FD_PB_BUSY_FLAG );
+        assert( tail->flags & H5FD_PB_READ_FLAG );
+        assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-        assert(tail->flags & H5FD_PB_BUSY_FLAG);
-        assert(tail->flags & H5FD_PB_READ_FLAG);
+        H5MM_memcpy( (void *)(((char *)buf ) + head_size + ( read_count * file_ptr->fa.page_size )), 
+                     tail->page, tail_size );
 
-#if 0
-        if (memcpy(buf, tail->page, tail_index) == NULL)
-            perror("Tail could not be read from page buffer to buf");
-#else
-        H5MM_memcpy(buf, tail->page, tail_size);
-#endif
+        tail->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
 
-        /* Clears busy and read flags */
-        tail->flags &= ~(H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG);
+        read_count++;
     }
+
+    assert( read_count == num_pages );
 
 done:
-
-    if (page_offset_list) {
-        free(page_offset_list);
-    }
 
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__pb_read() */
 
+
 /*-------------------------------------------------------------------------
  * Function:    H5FD__pb_write
  *
  * Purpose:     Writes SIZE bytes of data to the page buffer and / or the 
- *              underlying VFD, beginning at address ADDR from buffer BUF 
- *		according to data transfer properties in DXPL_ID.
+ *              underlying VFD beginning at address ADDR, from buffer BUF 
+ *		        according to data transfer properties in DXPL_ID.
  *
  * Return:      SUCCEED/FAIL
  *-------------------------------------------------------------------------
@@ -1269,313 +1334,328 @@ static herr_t
 H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size_t size,
                      const void *buf)
 {
-    size_t               head_size;
-    size_t               tail_size;
-    haddr_t              head_offset;    /* offset for head page */
-    haddr_t              write_offset;    /* to track pages to be written */
-    size_t               pb_size;        /* size adjusts to page boundaries */
-    uint32_t             hash_code;      /* key for a page in the ht */
-    haddr_t             *page_offset_list = NULL; /* Array of page offsets */
-    uint64_t             list_index;    /* offset for current page */
-    size_t               num_pages;       /* Pages in the read request */
-    uint64_t             pages_remaining; /* Number of pages left */
-    haddr_t              head_index = 0;  /* index in head page for read */
-    haddr_t              tail_index = 0;  /* index in tail page for read */
-    uint64_t             tail_exists = 0; /* flag for tail page existence */
+    bool       head_exists        = FALSE;         
+    bool       middle_exists      = FALSE;
+    bool       tail_exists        = FALSE;
+    uint64_t   num_pages          = 0;           /* number of pages in the request */
+    uint64_t   page_num;                         /* page number of the head page */
+    haddr_t    head_page_addr     = HADDR_UNDEF; /* addr for the beginning of the head page */
+    haddr_t    head_start_addr    = HADDR_UNDEF; /* addr for where the write starts in the head page */
+    size_t     head_size          = 0;
+    haddr_t    middle_start_addr  = HADDR_UNDEF;    
+    size_t     middle_size        = 0;
+    uint64_t   middle_page_count  = 0;
+    uint64_t   middle_check_count = 0;           /* used to count and check if pages exist in the ht */
+    haddr_t    tail_start_addr    = HADDR_UNDEF;
+    size_t     tail_size          = 0;
+    haddr_t    addr_of_remainder;                /* Used to calculate if head, middle, and tails exist */
+    size_t     size_of_remainder;                /* Used to calculate if head, middle, and tails exist */
+    haddr_t    expected_addr;
+    uint32_t   hash_code;
+    size_t     write_count        = 0;           /* total count of all writes */
+    haddr_t    current_addr;                     /* used to track addr for multiple middles */
+
     H5FD_pb_pageheader_t *head = NULL;
     H5FD_pb_pageheader_t *tail = NULL;
     H5FD_pb_pageheader_t *middle = NULL;
-    H5FD_pb_t            *file_ptr = (H5FD_pb_t *)_file;
-    H5P_genplist_t       *plist_ptr = NULL;
+    H5FD_pb_t *           file_ptr  = (H5FD_pb_t *)_file;
     herr_t                ret_value = SUCCEED;
 
     FUNC_ENTER_PACKAGE
 
     H5FD_PB_LOG_CALL(__func__);
 
-    assert(file_ptr);
-    assert(file_ptr->pub.cls);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(buf);
+    assert( file_ptr );
+    assert( file_ptr->pub.cls );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( buf );
 
-    if (NULL == (plist_ptr = (H5P_genplist_t *)H5I_object(dxpl_id)))
-        HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, FAIL, "not a property list");
+    /* Check for overflow conditions */
+    if (!H5_addr_defined(addr))
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "addr undefined, addr = %llu", (unsigned long long)addr);
 
-
-    /*******************/
-    /**** Head Case ****/
-    /*******************/
-    if (addr % file_ptr->fa.page_size != 0) {
-
-        /* Adjusts addr back to beginning of page */
-        head_offset = addr - (addr % file_ptr->fa.page_size);
-
-        /* Index for where in head page actual write needs */
-        head_index = addr - head_offset;
+    if (REGION_OVERFLOW(addr, size))
+        HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL, "addr overflow, addr = %llu", (unsigned long long)addr);
 
 
-        /* make note of the head size
-         *
-         * initially set head_size equal to the number ov bytes from the
-         * beginning of the read to the next page boundary.
-         */
-        head_size = file_ptr->fa.page_size - head_index;
+    addr_of_remainder = addr;
+    size_of_remainder = size;
 
-        /* If size is less than the head_size, the head ends before the
-         * next page boundary.  If so, adjust head_size accordingly.
-         */
-        if ( head_size > size ) {
 
-            head_size = size;
+
+    /***** Checks if a head exists *****/
+
+    if ( addr_of_remainder % file_ptr->fa.page_size != 0 ) {
+
+        head_exists = TRUE;
+        page_num = addr / file_ptr->fa.page_size;
+        head_page_addr = page_num * file_ptr->fa.page_size;
+        head_start_addr = head_page_addr + ( addr % file_ptr->fa.page_size );
+        head_size = file_ptr->fa.page_size - ( addr % file_ptr->fa.page_size );
+
+        /* If head is smaller then remainder then entire write is in the head */
+        if ( head_size >= size_of_remainder ) {
+
+            head_size = size_of_remainder;
+            size_of_remainder = 0;
+
+        }
+        else {
+
+            size_of_remainder -= head_size;
+            addr_of_remainder += head_size;
+
+            assert( size_of_remainder > 0 );
+            assert( 0 == ( addr_of_remainder % file_ptr->fa.page_size ) );
         }
 
-        assert(head_size > 0);
-        assert(head_size < file_ptr->fa.page_size);
+        num_pages++; 
+    }
+
+    assert( ( size_of_remainder == 0 ) || ( 0 == ( addr_of_remainder % file_ptr->fa.page_size )) );
 
 
-        /* Adjusts size to account for adjusting head_offset */
-        pb_size = size + head_index;
 
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, head_offset);
+    /***** Checks if a middle or middles exits *****/
 
-        head = H5FD__pb_ht_search_pageheader(file_ptr, head_offset, hash_code);
+    if ( ( size_of_remainder > 0 ) && ( ( size_of_remainder / file_ptr->fa.page_size ) > 0 )) {
 
-        /* If the head doesn't already exist in the page buffer */
-        if (head == NULL) {
+        middle_exists = TRUE;
+        middle_start_addr = addr_of_remainder;
+        middle_page_count = size_of_remainder / file_ptr->fa.page_size;
+        middle_size = middle_page_count * file_ptr->fa.page_size;
 
-            /* Gets a pageheader to store the page */
-            if ( NULL == (head = H5FD__pb_get_pageheader(file_ptr, type, dxpl_id, head_offset, hash_code)) )
+        assert( middle_size <= size_of_remainder );
+
+        size_of_remainder -= middle_size;
+        addr_of_remainder += middle_size;
+
+        assert( size_of_remainder < file_ptr->fa.page_size );
+        assert( 0 == ( addr_of_remainder % file_ptr->fa.page_size ) );
+
+        num_pages += middle_page_count;
+    }
+
+
+
+    /***** Checks if a tail exists *****/
+
+    if ( size_of_remainder > 0 ) {
+
+        assert( 0 == addr_of_remainder % file_ptr->fa.page_size );
+
+        tail_exists = TRUE;
+        tail_start_addr = addr_of_remainder;
+        tail_size = size_of_remainder;
+
+        num_pages++; 
+    }
+
+
+
+    /***** Check the head, middle(s), and tail sizes and starting addrs *****/
+
+    assert( head_size + middle_size + tail_size == size );
+
+    expected_addr = addr;
+
+    if ( head_exists ) {
+
+        assert( addr == head_start_addr );
+
+        if ( middle_exists || tail_exists ) {
+            
+            assert ( 0 == (( head_start_addr + head_size ) % file_ptr->fa.page_size) );
+        }
+        else {
+
+            assert( (( head_start_addr + head_size) - addr ) <= file_ptr->fa.page_size );
+        }
+
+        expected_addr += head_size;        
+    } 
+
+    if ( middle_exists ) {
+
+        assert( middle_start_addr == expected_addr ); 
+
+        expected_addr += middle_size;
+    }
+    
+    if ( tail_exists ) {
+
+        assert( tail_start_addr == expected_addr );
+    } 
+
+
+
+    /***** Performs write operation *****/
+
+    /***** Head operations *****/
+
+    if ( head_exists ) {
+
+        hash_code = H5FD__pb_calc_hash_code( file_ptr, head_page_addr );
+
+        head = H5FD__pb_ht_search_pageheader( file_ptr, head_page_addr, hash_code );
+
+        if ( head == NULL ) {
+
+            if ( NULL == ( head = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, head_page_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Head page could not be loaded");
 
-            /* stats update */
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the busy and write flag immediately */
+            head->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
+
             file_ptr->num_heads++;
-            /* end stats update */
         }
-        /* If head exists update position in replacement policy (rp) list */
         else {
-            H5FD__pb_rp_touch_pageheader(file_ptr, head);
+
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( head );
+            assert( head->magic == H5FD_PB_PAGEHEADER_MAGIC );
+            assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the busy and write flag immediately */
+            head->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
+
+            if ( file_ptr->fa.rp == 0 ) {
+                H5FD__pb_rp_touch_pageheader( file_ptr, head );
+            }
         }
 
-        assert(head);
+        assert( head );
+        assert( H5FD_PB_PAGEHEADER_MAGIC == head->magic );
 
-        /* Sets busy and write flags */
-        head->flags |= (H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG);
+        head->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
 
-        assert(head->flags & H5FD_PB_BUSY_FLAG);
-        assert(head->flags & H5FD_PB_WRITE_FLAG);
+        assert( head->flags & H5FD_PB_BUSY_FLAG );
+        assert( head->flags & H5FD_PB_WRITE_FLAG );
+        assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
 
+        H5MM_memcpy( head->page + ( head_start_addr - head_page_addr ), buf, head_size );
 
-        /* If the entire write request exists inside of a head page, need to
-         * use the size of the request itself to make sure we only write the
-         * exact section of the page needed to fulfill the write request
-         */
-#if 0
-        if (pb_size < file_ptr->fa.page_size) {
-            if (memcpy(head->page + head_index, buf, size) == NULL)
-                perror("Data could not be copied from buffer to head page");
-
-            /* Sets pb_size equal to the page size to not trigger a tail */
-            pb_size = test_vfd_config.page_size;
-        }
-
-        /* Writes the data into the head page at the appropriate offset */
-        if (memcpy(head->page + head_index, buf, test_vfd_config.page_size -
-                        head_index) == NULL)
-            perror("Data could not be copied from buffer to head page");
-#else
-        H5MM_memcpy(head->page + head_index, buf, head_size);
-#endif
-
-        /* Marks the head page as dirty */
         head->flags |= H5FD_PB_DIRTY_FLAG;
 
         file_ptr->total_dirty++;
 
-        write_offset = head_offset + file_ptr->fa.page_size;
+        head->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
 
-        /* Clears busy and write flags */
-        head->flags &= ~(H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG);
-    }
-    else {
-        head_size = 0;
-        head_offset = addr;
-        write_offset = addr;
-        pb_size = size;
+        write_count++;
     }
 
-    /**************************************************************/
-    /**** Checks for tail and gets number of pages and offsets ****/
-    /**************************************************************/
-    if ( 0 != (tail_size = ((size - head_size) % file_ptr->fa.page_size)) ) {
 
-        /* Adjusts size to end on next page boundary */
-        tail_index = file_ptr->fa.page_size - (pb_size % file_ptr->fa.page_size);
+    /***** Middle operations *****/
 
-        pb_size += tail_index;
+    if ( middle_exists ) {
 
-        tail_exists = 1;
+        current_addr = middle_start_addr;
 
-    }
+        /* Iterates through all middles and checks if any exist in the ht */
+        for ( middle_check_count = 0; middle_check_count < middle_page_count; middle_check_count++ ) {
 
-    /* Calculates the number of pages needed for the request */
-    num_pages = pb_size / file_ptr->fa.page_size;
+            hash_code = H5FD__pb_calc_hash_code( file_ptr, current_addr );
 
-    pages_remaining = num_pages;
+            middle = H5FD__pb_ht_search_pageheader( file_ptr, current_addr, hash_code );
 
-    /* If there is a head page it has already been accounted for */
-    if (head != NULL) {
+            /* If it exists in the ht invalidates the ht page*/
+            if ( middle != NULL ) {
 
-        pages_remaining--;
+                assert( middle );
+                assert( H5FD_PB_PAGEHEADER_MAGIC == middle->magic );
 
-        if ( head_size == size ) { /* we are done -- set pages_remaining = 0 */
+                H5FD__pb_invalidate_pageheader( file_ptr, middle );
 
-            pages_remaining = 0;
-        }
-    }
+                assert( middle->flags & H5FD_PB_INVALID_FLAG );
+            }
 
-    if ( pages_remaining > 0 ) {
+            current_addr += file_ptr->fa.page_size;
 
-        if ( NULL == (page_offset_list = (haddr_t *)calloc(num_pages, sizeof(haddr_t))) )
-            HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, FAIL, "Page offset list could not be allocated");
-
-        /* Gets the offset for each page in the request */
-        for (uint64_t i = 0; i < pages_remaining; i++) {
-
-            page_offset_list[i] = write_offset;
-            write_offset += file_ptr->fa.page_size;
-        }
-    }
-
-    /*********************/
-    /**** Middle Case ****/
-    /*********************/
-
-    /* Checks if the middle pages exist in the buffer.
-     * If they don't, writes them directly to the file (or lower VFD).
-     * If they do exist, mark them invalid, then write directly to file (or
-     * lower VFD).
-     */
-    if ( pages_remaining >= 1 ) {
-
-        list_index = 0;
-        write_offset = page_offset_list[list_index];
-    }
-
-    while (pages_remaining >= 1) {
-
-        /* Will break out of loop if the last page is a tail page, but if last
-         * page is a middle page, will perform steps here for it
-         */
-        if (pages_remaining == 1) {
-            if (tail_exists == 1)
-                break;
         }
 
-        /* Check if the page exists in the page buffer */
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, page_offset_list[ list_index]);
-
-        middle = H5FD__pb_ht_search_pageheader(file_ptr, page_offset_list[ list_index], 
-                                               hash_code);
-
-        /* If the page does exist in the page buffer invalidate it */
-        if (middle != NULL) {
-
-            /* Ensures there is a pageheader for the page */
-            assert(middle);
-
-            /* Invalidates page and sets pageheader to be next evicted */
-            H5FD__pb_invalidate_pageheader(file_ptr, middle);
-
-            assert(middle->flags & H5FD_PB_INVALID_FLAG);
-            assert(0 == (middle->flags & H5FD_PB_DIRTY_FLAG));
-        }
-
-        /* Write page directly to file (or lower VFD) from buf */
-#if 0
-        if (pwrite(file_ptr, buf + (list_index * test_vfd_config.page_size),
-                    test_vfd_config.page_size,
-                    page_offset_list[list_index]) !=
-                    test_vfd_config.page_size)
-            perror("Middle page couldn't be written to file or lower VFD");
-#else
-        if (H5FDwrite(file_ptr->file, type, dxpl_id, page_offset_list[list_index],
-                      file_ptr->fa.page_size,
-                      (const void *)(((const char *)buf) + (list_index * file_ptr->fa.page_size))) < 0)
+        /* Writes all middles */
+        if ( H5FDwrite( file_ptr->file, type, dxpl_id, middle_start_addr, middle_size,
+                        (const void *)(((const char *)buf ) + head_size )) < 0 ) {
             HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, \
                         "Middle page could not be written from file or lower VFD");
-#endif
+        }
 
-        /* stats update */
-        file_ptr->total_middle_writes++;
-        /* end stats update */
+        file_ptr->total_middle_writes += middle_page_count;
 
-        pages_remaining--;
-        list_index++;
-        write_offset = page_offset_list[list_index];
-    } /* end while */
+        write_count += middle_page_count;
+
+    }
 
 
-    /*******************/
-    /**** Tail Case ****/
-    /*******************/
+    /***** Tail operations *****/
 
-    if (tail_exists == 1) {
+    if ( tail_exists ) {
 
-        assert(pages_remaining == 1);
+        hash_code = H5FD__pb_calc_hash_code( file_ptr, tail_start_addr );
 
-        hash_code = H5FD__pb_calc_hash_code(file_ptr, write_offset);
+        tail = H5FD__pb_ht_search_pageheader( file_ptr, tail_start_addr, hash_code );
 
-        /* Checks if the tail already exists in the page buffer */
-        tail = H5FD__pb_ht_search_pageheader(file_ptr, write_offset, hash_code);
-
-
-        /* If the tail does not exist in the page buffer */
-        if (tail == NULL) {
-
-            if ( NULL == (tail = H5FD__pb_get_pageheader(file_ptr, type, dxpl_id, write_offset, hash_code)) )
+        if ( tail == NULL ) {
+            
+            if ( NULL == ( tail = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, tail_start_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Tail page could not be loaded");
 
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-            /* stats update */
+            /* Sets the pagehader as busy and write */
+            tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
+
             file_ptr->num_tails++;
-            /* end stats update */
         }
         else {
-            H5FD__pb_rp_touch_pageheader(file_ptr, tail);
+
+            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            assert( tail );
+            assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
+            assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
+            assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
+
+            /* Sets the pagehader as busy and write */
+            tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
+
+            if ( file_ptr->fa.rp == 0 ) {
+                H5FD__pb_rp_touch_pageheader( file_ptr, tail );
+            }
         }
 
-        assert(tail);
+        assert( tail );
+        assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-        /* Sets busy and write flags */
-        tail->flags |= (H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG);
+        assert( tail->flags & H5FD_PB_BUSY_FLAG );
+        assert( tail->flags & H5FD_PB_WRITE_FLAG );
+        assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-        assert(tail->flags & H5FD_PB_BUSY_FLAG);
-        assert(tail->flags & H5FD_PB_WRITE_FLAG);
-#if 0
-        H5MM_memcpy(tail->page, buf, tail_index);
-#else
-        H5MM_memcpy(tail->page, buf, tail_size);
-#endif
-        /* Marks the tail page as dirty */
+        H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( write_count * file_ptr->fa.page_size )), tail_size );
+
         tail->flags |= H5FD_PB_DIRTY_FLAG;
 
-        /* stats update */
         file_ptr->total_dirty++;
-        /* end stats update */
 
-        /* Clears busy and write flags */
-        tail->flags &= ~(H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG);
+        tail->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
+
+        write_count++;
     }
+
+    assert( write_count == num_pages );
 
 done:
-
-    if (page_offset_list) {
-        free(page_offset_list);
-    }
 
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__pb_write() */
+
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__pb_fapl_get
@@ -1737,17 +1817,17 @@ H5FD__pb_open(const char *name, unsigned flags, hid_t pb_fapl_id, haddr_t maxadd
     /* Get the driver-specific file access properties */
     plist_ptr = (H5P_genplist_t *)H5I_object(pb_fapl_id);
 
-    if (NULL == plist_ptr)
+    if ( NULL == plist_ptr )
         HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, NULL, "not a file access property list");
 
     fapl_ptr = (const H5FD_pb_vfd_config_t *)H5P_peek_driver_info(plist_ptr);
 
-    if (NULL == fapl_ptr) {
+    if ( NULL == fapl_ptr ) {
 
-        if (NULL == (default_fapl = H5FL_CALLOC(H5FD_pb_vfd_config_t)))
+        if ( NULL == ( default_fapl = H5FL_CALLOC(H5FD_pb_vfd_config_t) ))
             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate file access property list struct");
 
-        if (H5FD__pb_populate_config(NULL, default_fapl) < 0)
+        if ( H5FD__pb_populate_config( NULL, default_fapl ) < 0 )
             HGOTO_ERROR(H5E_VFL, H5E_CANTSET, NULL, "can't initialize driver configuration info");
 
         fapl_ptr = default_fapl;
@@ -1759,17 +1839,17 @@ H5FD__pb_open(const char *name, unsigned flags, hid_t pb_fapl_id, haddr_t maxadd
     file_ptr->fa.rp            = fapl_ptr->rp;
 
     /* copy the FAPL for the underlying VFD */
-    if (H5FD__copy_plist(fapl_ptr->fapl_id, &(file_ptr->fa.fapl_id)) < 0)
+    if ( H5FD__copy_plist( fapl_ptr->fapl_id, &(file_ptr->fa.fapl_id)) < 0)
         HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, NULL, "can't copy underlying FAPL");
 
     /* open the underlying VFD / file */
-    file_ptr->file = H5FD_open(name, flags, fapl_ptr->fapl_id, HADDR_UNDEF);
+    file_ptr->file = H5FD_open( name, flags, fapl_ptr->fapl_id, HADDR_UNDEF );
 
     if ( NULL == file_ptr->file )
         HGOTO_ERROR(H5E_VFL, H5E_CANTOPENFILE, NULL, "unable to open underlying file");
 
     /* initialize the hash table */
-    for (int32_t i = 0; i < H5FD_PB_DEFAULT_NUM_HASH_BUCKETS; i++) {
+    for ( int32_t i = 0; i < H5FD_PB_DEFAULT_NUM_HASH_BUCKETS; i++ ) {
         file_ptr->ht_bucket[i].index               = i;
         file_ptr->ht_bucket[i].num_pages_in_bucket = 0;
         file_ptr->ht_bucket[i].ht_head_ptr         = NULL;
@@ -1784,6 +1864,12 @@ H5FD__pb_open(const char *name, unsigned flags, hid_t pb_fapl_id, haddr_t maxadd
     /* initialize EOA management fields */
     file_ptr->eoa_up                = 0;
     file_ptr->eoa_down              = 0;
+
+#if 0 /* JRM */
+    /* eventually we will want a stats reset function -- don't do this now 
+     * unless you have time.
+     */
+#endif /* JRM */
     
     /* initialize statistics */
     file_ptr->num_pages             = 0;
@@ -1807,21 +1893,21 @@ H5FD__pb_open(const char *name, unsigned flags, hid_t pb_fapl_id, haddr_t maxadd
 
 done:
 
-    if (default_fapl)
+    if ( default_fapl )
         H5FL_FREE(H5FD_pb_vfd_config_t, default_fapl);
 
-    if (NULL == ret_value) {  /* do error cleanup */
+    if ( NULL == ret_value ) {  /* do error cleanup */
 
-        if (file_ptr) {
+        if ( file_ptr ) {
 
-            if (H5I_INVALID_HID != file_ptr->fa.fapl_id) {
+            if ( H5I_INVALID_HID != file_ptr->fa.fapl_id ) {
 
-                H5I_dec_ref(file_ptr->fa.fapl_id);
+                H5I_dec_ref( file_ptr->fa.fapl_id );
             }
 
-            if (file_ptr->file) {
+            if ( file_ptr->file ) {
 
-                H5FD_close(file_ptr->file);
+                H5FD_close( file_ptr->file );
             }
 
             H5FL_FREE(H5FD_pb_t, file_ptr);
@@ -1865,19 +1951,23 @@ H5FD__pb_close(H5FD_t *_file)
     H5FD_PB_LOG_CALL(__func__);
 
     /* Sanity check */
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
     /* must flush the page buffer as writes can occur after the flush on file close */
-    if ( H5FD__pb_flush(_file, H5P_DEFAULT, TRUE) < 0 ) 
+    if ( H5FD__pb_flush( _file, H5P_DEFAULT, TRUE) < 0 ) 
         HGOTO_ERROR(H5E_VFL, H5E_CANTFLUSH, FAIL, "unable to flush pagebuffer on close");
 
+#if 0 /* JRM */
+    /* this is another place where it would be convenient to track the number of dirty pages */
+#endif /* JRM */
     /* verify that the page buffer is in fact clean */
     pageheader = file_ptr->rp_head_ptr;
 
     while ( pageheader ) {
 
-        assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
+        assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
+        assert( 0 == ( pageheader->flags & H5FD_PB_BUSY_FLAG ) );
 
         if ( pageheader->flags & H5FD_PB_DIRTY_FLAG )
             HGOTO_ERROR(H5E_VFL, H5E_CANTCLOSEFILE, FAIL, "Page buffer contains one or more dirty pages");
@@ -1886,21 +1976,19 @@ H5FD__pb_close(H5FD_t *_file)
     }
 
     /* close the underlying VFD */
-    if (H5I_dec_ref(file_ptr->fa.fapl_id) < 0)
+    if ( H5I_dec_ref( file_ptr->fa.fapl_id ) < 0 )
         HGOTO_ERROR(H5E_VFL, H5E_ARGS, FAIL, "can't close underlying VFD FAPL");
 
-    if (file_ptr->file) {
+    if ( file_ptr->file ) {
 
-        if (H5FD_close(file_ptr->file) == FAIL)
+        if ( H5FD_close( file_ptr->file ) == FAIL )
             HGOTO_ERROR(H5E_VFL, H5E_CANTCLOSEFILE, FAIL, "unable to close underlying file");
     }
 
     /* discard page buffer data structures */
-#if 0 
-    pageheader = file_ptr->rp_head_ptr;
-#else
+
     pageheader = file_ptr->rp_tail_ptr;
-#endif
+
     while ( pageheader ) {
 
         discard_page_ptr = pageheader;
@@ -1908,27 +1996,27 @@ H5FD__pb_close(H5FD_t *_file)
         pageheader = pageheader->rp_prev_ptr;
 
         /* remove the page from the replacement policy DLL */
-        if ( H5FD__pb_rp_remove_pageheader(file_ptr, discard_page_ptr) != 0 )
+        if ( H5FD__pb_rp_remove_pageheader( file_ptr, discard_page_ptr ) != 0 )
             HGOTO_ERROR(H5E_VFL, H5E_CANTCLOSEFILE, FAIL, "Can't remove page from RP list");
 
-        if ( 0 == (discard_page_ptr->flags & H5FD_PB_INVALID_FLAG) ) {
+        if ( 0 == ( discard_page_ptr->flags & H5FD_PB_INVALID_FLAG ) ) {
 
             /* Invalid flag is not set, so page must be in the hash table -- remove it */
-            if (H5FD__pb_ht_remove_pageheader(file_ptr, discard_page_ptr) != 0)
+            if ( H5FD__pb_ht_remove_pageheader( file_ptr, discard_page_ptr ) != 0 )
                 HGOTO_ERROR(H5E_VFL, H5E_CANTCLOSEFILE, FAIL, "Can't remove page from hash table");
         }
 
         discard_page_ptr->magic = 0;
-        free(discard_page_ptr);
+        free( discard_page_ptr );
     }
-    assert(0 == file_ptr->rp_pageheader_count);
+    assert( 0 == file_ptr->rp_pageheader_count );
 
     /* verify that the hash table is empty */
     for ( i = 0; i < H5FD_PB_DEFAULT_NUM_HASH_BUCKETS; i++ ) {
 
-        assert(i == file_ptr->ht_bucket[i].index);
-        //assert(0 == file_ptr->ht_bucket[i].num_pages_in_bucket);
-        assert(NULL == file_ptr->ht_bucket[i].ht_head_ptr);
+        assert( i == file_ptr->ht_bucket[i].index );
+        assert( 0 == file_ptr->ht_bucket[i].num_pages_in_bucket );
+        assert( NULL == file_ptr->ht_bucket[i].ht_head_ptr );
     }
 
 
@@ -1990,28 +2078,15 @@ H5FD__pb_get_eoa(const H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type)
     assert(file_ptr->file);
     assert(H5FD_PB_MAGIC == file_ptr->magic);
 
-    if ((eoa_down = H5FD_get_eoa(file_ptr->file, type)) == HADDR_UNDEF) {
-#if 1 
-        fprintf(stderr, "\n\n ************* H5FD__pb_get_eoa(): eoa down mismatch **************\n\n");
-#endif
+    if ((eoa_down = H5FD_get_eoa(file_ptr->file, type)) == HADDR_UNDEF) 
         HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, HADDR_UNDEF, "unable to get eoa");
-    }
 
     if ( H5_addr_ne(eoa_down, file_ptr->eoa_down) )
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, HADDR_UNDEF, "eoa_down mismatch");
-#if 1
+
     ret_value = file_ptr->eoa_up;
-#else
-    ret_value = file_ptr->eoa_down;
-#endif
 
 done:
-
-#if 0 /* JRM */
-    fprintf(stderr, "\nH5FD__pb_get_eoa(): eoa_up = 0x%llx, eoa_down = 0x%llx/0x%llx\n",
-           (unsigned long long)(file_ptr->eoa_up), (unsigned long long)eoa_down,
-           (unsigned long long)(file_ptr->eoa_down));
-#endif /* JRM */
 
     FUNC_LEAVE_NOAPI(ret_value)
 
@@ -2071,13 +2146,6 @@ H5FD__pb_set_eoa(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, haddr_t addr)
     file_ptr->eoa_down = eoa_down;
 
 done:
-
-#if 0 /* JRM */
-    fprintf(stderr, "\nH5FD__pb_set_eoa(): addr = 0x%llx,  eoa_up = 0x%llx, eoa_down = 0x%llx\n",
-           (unsigned long long)addr,
-           (unsigned long long)(file_ptr->eoa_up),
-           (unsigned long long)(file_ptr->eoa_down));
-#endif /* JRM */
 
     FUNC_LEAVE_NOAPI(ret_value)
 
@@ -2335,7 +2403,7 @@ H5FD__pb_lock(H5FD_t *_file, bool rw)
     assert(file);
     assert(file->file);
 
-    /* Place the lock on each file */
+    /* Place the lock on underlying file */
     if (H5FD_lock(file->file, rw) < 0)
         HGOTO_ERROR(H5E_VFL, H5E_CANTLOCKFILE, FAIL, "unable to lock file");
 
@@ -2368,7 +2436,7 @@ H5FD__pb_unlock(H5FD_t *_file)
     assert(file->file);
 
     if (H5FD_unlock(file->file) < 0)
-        HGOTO_ERROR(H5E_VFL, H5E_CANTUNLOCKFILE, FAIL, "unable to unlock R/W file");
+        HGOTO_ERROR(H5E_VFL, H5E_CANTUNLOCKFILE, FAIL, "unable to unlock file");
 
 done:
 
@@ -2874,24 +2942,20 @@ done:
  *-----------------------------------------------------------------------------
  */
 H5FD_pb_pageheader_t *
-H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t offset, uint32_t hash_code)
+H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t addr, uint32_t hash_code)
 {
     H5FD_pb_pageheader_t *pageheader = NULL;
     H5FD_pb_pageheader_t *ret_value = NULL;
 
-    FUNC_ENTER_PACKAGE_NOERR
+    FUNC_ENTER_NOAPI(FAIL)
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
     /* Allocates space for the pageheader */
-    pageheader = (H5FD_pb_pageheader_t *)malloc(sizeof(H5FD_pb_pageheader_t) +
-                                                file_ptr->fa.page_size);
-
-    if (pageheader == NULL) {
-        perror("Pageheader could not be allocated");
-        return NULL;
-    }
+    if ( NULL == (pageheader = (H5FD_pb_pageheader_t *)malloc(sizeof(H5FD_pb_pageheader_t) +
+                                                file_ptr->fa.page_size )))
+        HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate page header");
 
 
     pageheader->magic           = H5FD_PB_PAGEHEADER_MAGIC;
@@ -2901,10 +2965,13 @@ H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t offset, uint32_
     pageheader->rp_next_ptr     = NULL;
     pageheader->rp_prev_ptr     = NULL;
     pageheader->flags           = 0;
-    pageheader->page_offset     = offset;
+    pageheader->page_addr       = addr;
     pageheader->type            = H5FD_MEM_DEFAULT;
 
     ret_value = pageheader;
+
+
+done:
 
     FUNC_LEAVE_NOAPI(ret_value);
 
@@ -2914,15 +2981,13 @@ H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t offset, uint32_
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_invalidate_pageheader
  *
- * Purpose:     When a page header needs to be marked invalid (i.e. a write
- *              request was made and this page was contained in the middle
- *              section of the Paged I/O request). The invalid flag is
- *              flipped to signify this page is invalid, and it is removed
+ * Purpose:     When a page header needs to be marked invalid. The invalid flag
+ *              is flipped to signify this page is invalid, and it is removed
  *              from the hash table and replacement policy (rp) list and then
- *              is appended to the tail of the replacement policy list. This
- *              ensures invalid pages are evicted ASAP.
+ *              is appended to the tail of the replacement policy list to
+ *              ensure invalid pages are evicted ASAP.
  *
- * Return:      void
+ * Return:      SUCCESS/FAIL
  *
  *-----------------------------------------------------------------------------
  */
@@ -2933,23 +2998,23 @@ H5FD__pb_invalidate_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pagehe
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(pageheader);
-    assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
     pageheader->flags |= H5FD_PB_INVALID_FLAG;
     pageheader->flags &= ~H5FD_PB_DIRTY_FLAG;
 
-    assert(0 == (pageheader->flags & H5FD_PB_BUSY_FLAG));
-    assert(0 == (pageheader->flags & H5FD_PB_DIRTY_FLAG));
-    assert(0 == (pageheader->flags & H5FD_PB_READ_FLAG));
-    assert(0 == (pageheader->flags & H5FD_PB_WRITE_FLAG));
-    assert(pageheader->flags & H5FD_PB_INVALID_FLAG);
+    assert( 0 == ( pageheader->flags & H5FD_PB_BUSY_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_DIRTY_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_READ_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_WRITE_FLAG ));
+    assert( pageheader->flags & H5FD_PB_INVALID_FLAG );
 
-    H5FD__pb_ht_remove_pageheader(file_ptr, pageheader);
-    H5FD__pb_rp_remove_pageheader(file_ptr, pageheader);
-    H5FD__pb_rp_append_pageheader(file_ptr, pageheader);
+    H5FD__pb_ht_remove_pageheader( file_ptr, pageheader );
+    H5FD__pb_rp_remove_pageheader( file_ptr, pageheader );
+    H5FD__pb_rp_append_pageheader( file_ptr, pageheader );
 
     file_ptr->total_invalidated++;
 
@@ -2975,20 +3040,20 @@ H5FD__pb_flush_page(H5FD_pb_t * file_ptr, hid_t dxpl_id, H5FD_pb_pageheader_t *p
 
     FUNC_ENTER_PACKAGE
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(pageheader);
-    assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
-#if 0
-    if (pwrite(file_ptr, pageheader->page, test_vfd_config.page_size,
-                    pageheader->page_offset) != test_vfd_config.page_size)
-        perror("Page could not be flushed to file or lower VFD");
-#endif
-    if (H5FDwrite(file_ptr->file, pageheader->type, dxpl_id, pageheader->page_offset, 
-                  file_ptr->fa.page_size, pageheader->page) < 0)
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
+
+    if ( H5FDwrite( file_ptr->file, pageheader->type, dxpl_id, pageheader->page_addr, 
+                    file_ptr->fa.page_size, pageheader->page ) < 0 )
         HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "Page could not be flushed to underlying VFD.");
 
     pageheader->flags &= ~H5FD_PB_DIRTY_FLAG;
+
+    file_ptr->total_flushed++;
+
+    assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
 done:
 
@@ -3011,60 +3076,59 @@ done:
  */
 H5FD_pb_pageheader_t*
 H5FD__pb_get_pageheader(H5FD_pb_t *file_ptr, H5FD_mem_t type, hid_t dxpl_id, 
-                        haddr_t offset, uint32_t hash_code)
+                        haddr_t addr, uint32_t hash_code)
 {
     H5FD_pb_pageheader_t *pageheader = NULL;
     H5FD_pb_pageheader_t *ret_value = NULL;
 
     FUNC_ENTER_PACKAGE
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
 
     /* If not at maximum pageheaders allocates and initiates a new one */
-    if (file_ptr->rp_pageheader_count < H5FD_PB_DEFAULT_MAX_NUM_PAGES) {
+    if ( file_ptr->rp_pageheader_count < H5FD_PB_DEFAULT_MAX_NUM_PAGES ) {
 
-        if ( NULL == (pageheader = H5FD__pb_alloc_and_init_pageheader(file_ptr, offset, hash_code)) )
+        if ( NULL == (pageheader = H5FD__pb_alloc_and_init_pageheader( file_ptr, addr, hash_code )) )
             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate page");
+
     }
-    /* If at the maximum pageheaders evicts a pageheader from rp to
-     * replace the page it stores with the new one
-     */
+    /* If at maximum pageheaders, a pageheader is evicted from rp to store the new one */
     else {
-        pageheader = H5FD__pb_rp_evict_pageheader(file_ptr);
 
-        if (pageheader == NULL) {
-            perror("Pageheader could not be evicted");
+        pageheader = H5FD__pb_rp_evict_pageheader( file_ptr, addr, hash_code );
+
+        if ( NULL == pageheader ) {
+            HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate page");
         }
-
-        pageheader->hash_code   = hash_code;
-        pageheader->flags       = 0;
-        pageheader->page_offset = offset;
-
     }
 
-    assert(pageheader);
-    assert(pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC);
-    assert(pageheader->hash_code == hash_code);
-    assert(pageheader->page_offset == offset);
+    assert( pageheader );
+    assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
+    assert( pageheader->hash_code == hash_code );
+    assert( pageheader->page_addr == addr );
 
-    pageheader->flags |= H5FD_PB_BUSY_FLAG;
+    assert( 0 == ( pageheader->flags & H5FD_PB_BUSY_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_INVALID_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_READ_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_WRITE_FLAG ));
+    assert( 0 == ( pageheader->flags & H5FD_PB_DIRTY_FLAG ));
 
     pageheader->type = type;
 
-    /* pread(file_ptr, pageheader->page, test_vfd_config.page_size, offset); */
-    if (H5FDread(file_ptr->file, type, dxpl_id, offset, file_ptr->fa.page_size, pageheader->page) < 0)
+    if (H5FDread( file_ptr->file, type, dxpl_id, addr, file_ptr->fa.page_size, pageheader->page ) < 0)
         HGOTO_ERROR(H5E_VFL, H5E_READERROR, NULL, "Reading from underlying VFD failed");
 
-
-    if (H5FD__pb_rp_insert_pageheader(file_ptr, pageheader) != 0) {
+    if (H5FD__pb_rp_insert_pageheader( file_ptr, pageheader ) != 0) {
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be inserted into rp");
     }
 
-    if (H5FD__pb_ht_insert_pageheader(file_ptr, pageheader) != 0) {
+    if (H5FD__pb_ht_insert_pageheader( file_ptr, pageheader ) != 0) {
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be inserted into ht");
     }
+
+    assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
     file_ptr->num_pages++;
 
@@ -3080,7 +3144,7 @@ done:
 
 
 /*******************************/
-/**** Hash Table Functions ****/
+/**** Hash Table Functions *****/
 /*******************************/
 
 
@@ -3088,21 +3152,21 @@ done:
  * Function:    H5FD__pb_calc_hash_code
  *
  * Purpose:     Generates a hash code for a pageheader based on the page's
- *              offset, to determine which bucket to store the pageheader.
+ *              addr, to determine which bucket to store the pageheader.
  *
  *              The hash code is generated by discarding the lower order bits
- *              of the offset (which is based on the page size) and right
+ *              of the addr (which is based on the page size) and right
  *              shifting the remaining bits. This gives us the page number
  *              (this method is more efficient that division). The page number
  *              is then modded by the number of buckets in the hash table to
  *              get the hash code for that page.
  *
- * Return:      hash code computed from offset.
+ * Return:      uint32_t hash_code
  *
  *-----------------------------------------------------------------------------
  */
 uint32_t
-H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t offset)
+H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t addr)
 {
     uint32_t        hash_code;
     uint64_t        lower_order_bits;
@@ -3111,15 +3175,14 @@ H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t offset)
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
     /* Gets the number of lower order bits based on the page size */
-    //lower_order_bits = (uint64_t)log2(file_ptr->fa.page_size);
     lower_order_bits = (uint64_t)llrint(ceil(log2((double)(file_ptr->fa.page_size))));
 
     /* Discards the lower order bits and right shits the remaing bits */
-    page_number = offset >> lower_order_bits;
+    page_number = addr >> lower_order_bits;
 
     /* Mod the page number by the number of buckets in the hash table */
     hash_code = page_number % H5FD_PB_DEFAULT_NUM_HASH_BUCKETS;
@@ -3138,14 +3201,17 @@ H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t offset)
  *              index that matches the hash code. Currently insert works by 
  *              prepending the page header.
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
 H5FD__pb_ht_insert_pageheader(H5FD_pb_t *file_ptr, 
                               H5FD_pb_pageheader_t *pageheader)
 {
-    uint32_t hash_code = pageheader->hash_code;
+    uint32_t                hash_code = pageheader->hash_code;
+    H5FD_pb_pageheader_t  **bucket_head_ptr = &file_ptr->ht_bucket[hash_code].ht_head_ptr;
+    int32_t               *num_pages_in_bucket = &file_ptr->ht_bucket[hash_code].num_pages_in_bucket;
+
     herr_t ret_value = SUCCEED;
 
     FUNC_ENTER_PACKAGE_NOERR
@@ -3156,25 +3222,28 @@ H5FD__pb_ht_insert_pageheader(H5FD_pb_t *file_ptr,
     assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
 
     /* If the bucket is empty, the pageheader is inserted as the head */
-    if (file_ptr->ht_bucket[hash_code].ht_head_ptr == NULL) {
-        file_ptr->ht_bucket[hash_code].ht_head_ptr = pageheader;
+    if ( *bucket_head_ptr == NULL ) {
+
+        *bucket_head_ptr = pageheader;
     }
-    /* If the bucket is not empty, the pageheader is inserted as the head and
-     * the previous head is after this page header 
-     */
+
     else {
 
-        file_ptr->ht_bucket[hash_code].ht_head_ptr->ht_next_ptr = pageheader;
-        pageheader->ht_prev_ptr = file_ptr->ht_bucket[hash_code].ht_head_ptr;
-        file_ptr->ht_bucket[hash_code].ht_head_ptr = pageheader;
+        (*bucket_head_ptr)->ht_prev_ptr = pageheader;
+
+        pageheader->ht_next_ptr = *bucket_head_ptr;
+        
+        *bucket_head_ptr = pageheader;
     }
 
     /* stats update*/
-    assert(0 <= file_ptr->ht_bucket[hash_code].num_pages_in_bucket);
-    file_ptr->ht_bucket[hash_code].num_pages_in_bucket++;
-    if (file_ptr->ht_bucket[hash_code].num_pages_in_bucket > (int32_t)(file_ptr->largest_num_in_bucket)) {
+    assert(0 <= (*num_pages_in_bucket));
 
-        file_ptr->largest_num_in_bucket = (size_t)(file_ptr->ht_bucket[hash_code].num_pages_in_bucket);
+    (*num_pages_in_bucket)++;
+
+    if ( (*num_pages_in_bucket) > (int32_t)(file_ptr->largest_num_in_bucket)) {
+
+        file_ptr->largest_num_in_bucket = (size_t)(*num_pages_in_bucket);
 
     }
     /* end stats update */
@@ -3189,15 +3258,19 @@ H5FD__pb_ht_insert_pageheader(H5FD_pb_t *file_ptr,
  *
  * Purpose:     Removes a page header from the hash table (ht).
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
 H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr, 
                               H5FD_pb_pageheader_t *pageheader)
 {
-    uint32_t hash_code = pageheader->hash_code;
-    herr_t ret_value = SUCCEED;
+    uint32_t               hash_code = pageheader->hash_code;
+    H5FD_pb_pageheader_t **bucket_head_ptr = &file_ptr->ht_bucket[hash_code].ht_head_ptr;
+    int32_t               *num_pages_in_bucket = &file_ptr->ht_bucket[hash_code].num_pages_in_bucket;
+
+
+    herr_t                ret_value = SUCCEED;
 
     FUNC_ENTER_PACKAGE_NOERR
 
@@ -3206,20 +3279,8 @@ H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr,
     assert(pageheader);
     assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
 
-#if 0
-    /* If the pageheader is the head of the bucket */
-    if (file_ptr->ht_bucket[hash_code].ht_head_ptr == pageheader) {
-        file_ptr->ht_bucket[hash_code].ht_head_ptr = NULL;
-    }
-    else if (pageheader->ht_prev_ptr) {
-        pageheader->ht_prev_ptr->ht_next_ptr = pageheader->ht_next_ptr;
-    }
-    else if (pageheader->ht_next_ptr) {
-        pageheader->ht_next_ptr->ht_prev_ptr = pageheader->ht_prev_ptr;
-    }
-#else
-    assert(file_ptr->ht_bucket[hash_code].ht_head_ptr);
-    //assert(0 < file_ptr->ht_bucket[hash_code].num_pages_in_bucket);
+    assert(*bucket_head_ptr);
+    assert(0 < *num_pages_in_bucket);
 
     if ( pageheader->ht_next_ptr ) {
 
@@ -3231,15 +3292,14 @@ H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr,
         pageheader->ht_prev_ptr->ht_next_ptr = pageheader->ht_next_ptr;
     }
 
-    if ( pageheader == file_ptr->ht_bucket[hash_code].ht_head_ptr ) {
+    if ( pageheader == *bucket_head_ptr ) {
 
-        file_ptr->ht_bucket[hash_code].ht_head_ptr = pageheader->ht_next_ptr;
+        *bucket_head_ptr = pageheader->ht_next_ptr;
     }
 
-    file_ptr->ht_bucket[hash_code].num_pages_in_bucket--;
-#endif
+    (*num_pages_in_bucket)--;
 
-    /* Sets the pageheader's ptrs to null since it's no longer in the list */
+
     pageheader->ht_prev_ptr = NULL;
     pageheader->ht_next_ptr = NULL;
 
@@ -3251,8 +3311,8 @@ H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_ht_search_pageheader
  *
- * Purpose:     Searches the hash table (ht) for a page header based on the
- *              offset and hashcode. If the page header is found, it is
+ * Purpose:     Searches the hash table (ht) for a page header based on its
+ *              addr and hashcode. If the page header is found, it is
  *              returned, otherwise NULL is returned.
  *
  * Return:      Success:    A pointer to the page header.
@@ -3260,7 +3320,7 @@ H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr,
  *-----------------------------------------------------------------------------
  */
 H5FD_pb_pageheader_t*
-H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t offset, 
+H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, 
                               uint32_t hash_code)
 {
     int32_t               search_depth; /* Stats varaibles */
@@ -3269,15 +3329,21 @@ H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t offset,
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
     pageheader = file_ptr->ht_bucket[hash_code].ht_head_ptr;
-
     search_depth = 0;
-    while (pageheader != NULL) {
+
+    while ( pageheader != NULL ) {
+
+        assert( pageheader );
+        assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
+
         search_depth++;
-        if (pageheader->page_offset == offset) {
+
+        if ( pageheader->page_addr == addr ) {
+
             ret_value = pageheader;
 
             /* stats update */
@@ -3286,21 +3352,26 @@ H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t offset,
             /* end stats update*/
             break;
         }
-        pageheader = pageheader->ht_prev_ptr;
+
+        pageheader = pageheader->ht_next_ptr;
 
     } /* end while */
 
     if ( pageheader ) {
 
-        assert(file_ptr->ht_bucket[hash_code].num_pages_in_bucket > 0);
+        assert( file_ptr->ht_bucket[hash_code].num_pages_in_bucket > 0 );
+        assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
     }
 
 
     /* stats update */
-    if ((size_t)search_depth > file_ptr->max_search_depth) {
+    if ( (size_t)search_depth > file_ptr->max_search_depth ) {
+
         file_ptr->max_search_depth = (size_t)search_depth;
     }
-    if (ret_value == NULL) {
+
+    if ( ret_value == NULL ) {
+
         file_ptr->num_misses++;
         file_ptr->total_fail_depth += (size_t)search_depth;
     }
@@ -3324,7 +3395,7 @@ H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t offset,
  *              will cause the pageheader to be inserted to the tail, making it
  *              the next evicted).
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
@@ -3335,28 +3406,28 @@ H5FD__pb_rp_insert_pageheader(H5FD_pb_t *file_ptr,
 
     FUNC_ENTER_PACKAGE
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(pageheader);
-    assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
-    /* If the page has been flagged as invalid, it's added to the tail to be 
-     * evicted next 
-     */
-    if (pageheader->flags & H5FD_PB_INVALID_FLAG)
+    /* If the page is invalid, it's appended to be evicted next */
+    if ( pageheader->flags & H5FD_PB_INVALID_FLAG )
     {
-        H5FD__pb_rp_append_pageheader(file_ptr, pageheader);
+        H5FD__pb_rp_append_pageheader( file_ptr, pageheader );
 
-        assert(pageheader->rp_next_ptr == NULL);
-        assert(file_ptr->rp_tail_ptr = pageheader);
+        assert( pageheader->rp_next_ptr == NULL );
+        assert( file_ptr->rp_tail_ptr = pageheader );
     }
-    else if (file_ptr->fa.rp == 0) {
 
-        H5FD__pb_rp_prepend_pageheader(file_ptr, pageheader);
+    else if ( file_ptr->fa.rp == 0 || file_ptr->fa.rp == 1 ) {
 
-        assert(pageheader->rp_prev_ptr == NULL);
-        assert(file_ptr->rp_head_ptr = pageheader);
+        H5FD__pb_rp_prepend_pageheader( file_ptr, pageheader );
+
+        assert( pageheader->rp_prev_ptr == NULL );
+        assert( file_ptr->rp_head_ptr = pageheader );
     }
+
     else {
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "unsupported replacement policy");
     }
@@ -3374,7 +3445,7 @@ done:
  * Purpose:     Prepends a page header to the replacement policy (inserts it at
  *              the head of the list to be evicted last).
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
@@ -3385,23 +3456,30 @@ H5FD__pb_rp_prepend_pageheader(H5FD_pb_t *file_ptr,
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    /* If head of the rp is null then list is empty and the pageheader becomes 
-     * head and tail 
-     */
-    if (file_ptr->rp_head_ptr == NULL) {
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
+
+
+    if ( file_ptr->rp_head_ptr == NULL ) {
+
         file_ptr->rp_head_ptr = pageheader;
+
         file_ptr->rp_tail_ptr = pageheader;
     }
-    /* If the rp list is not empty, the pageheader is inserted as the head 
-     * (the last to be evicted) 
-     */
+
+
     else {
+
         file_ptr->rp_head_ptr->rp_prev_ptr = pageheader;
+
         pageheader->rp_next_ptr = file_ptr->rp_head_ptr;
+
         file_ptr->rp_head_ptr = pageheader;
     }
 
-    file_ptr->rp_pageheader_count++;
+    file_ptr->rp_pageheader_count++; 
 
     FUNC_LEAVE_NOAPI(ret_value);
 
@@ -3414,7 +3492,7 @@ H5FD__pb_rp_prepend_pageheader(H5FD_pb_t *file_ptr,
  * Purpose:     Appends a page header to the replacement policy (inserts it at
  *              the tail of the list to be evicted next).
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
@@ -3425,25 +3503,23 @@ H5FD__pb_rp_append_pageheader(H5FD_pb_t *file_ptr,
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(pageheader);
-    assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
-    /* If head of the rp is null then list is empty and the pageheader becomes 
-     * head and tail 
-     */
     if (file_ptr->rp_tail_ptr == NULL) {
         
         file_ptr->rp_head_ptr = pageheader;
         file_ptr->rp_tail_ptr = pageheader;
     }
-    /* If the rp list is not empty, the pageheader is inserted as the tail and 
-     * the previous tail is after this page header 
-     */
+
     else {
+
         file_ptr->rp_tail_ptr->rp_next_ptr = pageheader;
+
         pageheader->rp_prev_ptr = file_ptr->rp_tail_ptr;
+        
         file_ptr->rp_tail_ptr = pageheader;
     }
 
@@ -3459,7 +3535,7 @@ H5FD__pb_rp_append_pageheader(H5FD_pb_t *file_ptr,
  *
  * Purpose:     Removes a page header from the replacement policy list.
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
@@ -3470,35 +3546,37 @@ H5FD__pb_rp_remove_pageheader(H5FD_pb_t * file_ptr,
 
     FUNC_ENTER_PACKAGE_NOERR
 
-    /* If the page header is only page header in the list */
-    if (file_ptr->rp_head_ptr == pageheader && file_ptr->rp_tail_ptr == pageheader) {
-        file_ptr->rp_head_ptr = NULL;
-        file_ptr->rp_tail_ptr = NULL;
-    }
-    /* If the page header is the head of the list */
-    else if (file_ptr->rp_head_ptr == pageheader) {
-        file_ptr->rp_head_ptr = pageheader->rp_next_ptr;
-        pageheader->rp_next_ptr->rp_prev_ptr = NULL;
-    }
-    /* If the page header is the tail of the list */
-    else if (file_ptr->rp_tail_ptr == pageheader) {
-        file_ptr->rp_tail_ptr = pageheader->rp_prev_ptr;
-        pageheader->rp_prev_ptr->rp_next_ptr = NULL;
-    }
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
-    /* If the page header is in the middle of the list */
-    else {
-        pageheader->rp_prev_ptr->rp_next_ptr = pageheader->rp_next_ptr;
+    if ( pageheader->rp_next_ptr ) {
+
         pageheader->rp_next_ptr->rp_prev_ptr = pageheader->rp_prev_ptr;
     }
 
-    /* Sets the pageheader's ptrs to null since it's no longer in the list */
+    if ( pageheader->rp_prev_ptr ) {
+
+        pageheader->rp_prev_ptr->rp_next_ptr = pageheader->rp_next_ptr;
+    }
+
+    if ( file_ptr->rp_head_ptr == pageheader ) {
+
+        file_ptr->rp_head_ptr = pageheader->rp_next_ptr;
+    }
+
+    if ( file_ptr->rp_tail_ptr == pageheader ) {
+
+        file_ptr->rp_tail_ptr = pageheader->rp_prev_ptr;
+    }
+
     pageheader->rp_prev_ptr = NULL;
     pageheader->rp_next_ptr = NULL;
 
     file_ptr->rp_pageheader_count--;
 
-    assert(file_ptr->rp_pageheader_count >= 0);
+    assert( file_ptr->rp_pageheader_count >= 0 );
 
     FUNC_LEAVE_NOAPI(ret_value);
 
@@ -3509,10 +3587,16 @@ H5FD__pb_rp_remove_pageheader(H5FD_pb_t * file_ptr,
  * Function:    H5FD__pb_touch_pageheader
  *
  * Purpose:     Updates a page headers position in the replacement policy (rp), 
- *              depending on the rp. LRU policy moves the page header to the
- *              head (last to be selected) of the list.
+ *              depending on the selected rp.
+ * 
+ *              Current supported replacement policies:
+ *                RP 0 == LRU (least recently used)
+ *                RP 1 == FIFO (first in first out)  
+ *                
+ *              NOTE: FIFO does not call this function because touch is not
+ *              needed for FIFO.
  *
- * Return:      void
+ * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
 herr_t
@@ -3523,19 +3607,18 @@ H5FD__pb_rp_touch_pageheader(H5FD_pb_t *file_ptr,
 
     FUNC_ENTER_PACKAGE
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
-    assert(pageheader);
-    assert(H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+    assert( pageheader );
+    assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
-    /* If the pageheader in the hash table was accessed then LRU moves that 
-     * pageheader to the head 
-     */
+    /* Replacement Policy 0 == LRU (least recently used) */
     if ( 0 == file_ptr->fa.rp ) {
 
-        H5FD__pb_rp_remove_pageheader(file_ptr, pageheader);
-        H5FD__pb_rp_prepend_pageheader(file_ptr, pageheader);
+        H5FD__pb_rp_remove_pageheader( file_ptr, pageheader );
+        H5FD__pb_rp_prepend_pageheader( file_ptr, pageheader );
     }
+
     else {
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "unsupported replacement policy");
     }
@@ -3550,67 +3633,75 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_evict_pageheader
  *
- * Purpose:     Evicts a page header from the replacement policy list. This 
- *              function is called when the maximum number of pages has been 
- *              reached and a new page needs to be stored in a pageheader. The 
- *              page header evicted depends on the replacement policy.
- *              (LRU evicts the tail of the list).
+ * Purpose:     When the maximum number of pageheaders has been reached a 
+ *              pageheader is evicted from the replacement policy (rp) list, 
+ *              based on the selected replacement policy, to be used to store
+ *              a new page.
+ *              
+ *              Replacement Policy 0 == LRU (least recently used)
+ *              Replacement Policy 1 == FIFO (first in first out)
  *
  * Return:      void
  *-----------------------------------------------------------------------------
  */
 H5FD_pb_pageheader_t*
-H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr)
+H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, uint32_t hash_code)
 {
     H5FD_pb_pageheader_t *pageheader = NULL;
     H5FD_pb_pageheader_t *ret_value = NULL;
 
     FUNC_ENTER_PACKAGE
 
-    assert(file_ptr);
-    assert(H5FD_PB_MAGIC == file_ptr->magic);
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
 
-    /* If the replacement policy is LRU, the tail of the list is evicted */
-    if (file_ptr->rp_policy == 0) {
+
+    /** 
+     * rp_policy:
+     * 0 == LRU 
+     * 1 == FIFO
+     */   
+    /* If the policy is LRU or FIFO the eviction is done the same way */
+    if ( file_ptr->rp_policy == 0 || file_ptr->rp_policy == 1 ) {
 
         pageheader = file_ptr->rp_tail_ptr;
 
-        assert(pageheader);
+        assert( pageheader);
+        assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-        /* If the pageheader at the tail is marked busy that pageheader is 
-         * moved to the head to give it another pass 
-         */
-        while (pageheader->flags == H5FD_PB_BUSY_FLAG) {
+        /* If busy check the next pageheader in the list */
+        while ( pageheader->flags == H5FD_PB_BUSY_FLAG ) {
 
-            H5FD__pb_rp_remove_pageheader(file_ptr, pageheader);
-            H5FD__pb_rp_prepend_pageheader(file_ptr, pageheader);
-
-            pageheader = file_ptr->rp_tail_ptr;
+            pageheader = pageheader->rp_prev_ptr;
         }
 
-        /* If the pageheader at the tail is marked dirty that pageheader is
-         * flushed to the file before being evicted.
-         */
-        if (pageheader->flags == H5FD_PB_DIRTY_FLAG) {
+        /* If dirty flush to file/lower VFD before evicting */
+        if ( pageheader->flags == H5FD_PB_DIRTY_FLAG ) {
+
             H5FD__pb_flush_page(file_ptr, H5P_DEFAULT, pageheader);
 
-            /* Updating stats */
-            file_ptr->total_flushed++;
-        }
+            assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
+        } 
 
-        /* Removes the pageheader from the rp list to load the new page into */
-        if (H5FD__pb_rp_remove_pageheader(file_ptr, pageheader) != 0) {
+        if ( H5FD__pb_rp_remove_pageheader( file_ptr, pageheader ) != 0 ) 
             HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be removed from rp");
-        }
-        if (H5FD__pb_ht_remove_pageheader(file_ptr, pageheader) != 0) {
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be removed from ht");
-        }
 
+        /* If the pageheader is flagged as invalid it would have been removed from the ht*/
+        if ( 0 == ( pageheader->flags & H5FD_PB_INVALID_FLAG )) { 
+
+            if ( H5FD__pb_ht_remove_pageheader( file_ptr, pageheader ) != 0 )
+                HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be removed from ht");
+        }
     }
+
     else {
 
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Replacement policy not supported");
     }
+
+    pageheader->flags       = 0;
+    pageheader->hash_code   = hash_code;
+    pageheader->page_addr = addr;
 
     file_ptr->total_evictions++;
 
@@ -3621,4 +3712,59 @@ done:
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__pb_rp_evict_pageheader() */
+
+
+
+
+/****************************/
+/**** Testing Functions *****/
+/****************************/
+
+
+/*-----------------------------------------------------------------------------
+ * Function:    H5FDpb_rp_eviction_check
+ *
+ * Purpose:     Testing function to return the pageheader being evicted to be 
+ *              compared to the pageheader expected to be evicted, ensuring the 
+ *              correct pageheader is the one being evicted.
+ *
+ * Return:      Success:    A pointer to the page header.
+ * 
+ *              Failure:    NULL
+ *-----------------------------------------------------------------------------
+ */
+haddr_t*
+H5FD__pb_rp_eviction_check(H5FD_t *_file, haddr_t *current_rp_addrs)
+{
+    H5FD_pb_t            *file_ptr = (H5FD_pb_t *)_file;
+    H5FD_pb_pageheader_t *pageheader = NULL;
+    int32_t               i;
+    haddr_t              *ret_value = NULL;
+
+    FUNC_ENTER_PACKAGE_NOERR
+
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+
+    pageheader = file_ptr->rp_tail_ptr;
+
+    i = 0;
+    while ( pageheader ) {
+
+        assert( pageheader) ;
+        assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
+
+        current_rp_addrs[i] = pageheader->page_addr;
+        i++;
+        pageheader = pageheader->rp_prev_ptr;
+
+    }
+
+    ret_value = current_rp_addrs;
+
+    FUNC_LEAVE_NOAPI(ret_value)
+
+} /* end H5FDpb_rp_eviction_check() */
+
+
 
