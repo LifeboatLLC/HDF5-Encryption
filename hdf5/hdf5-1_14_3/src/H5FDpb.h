@@ -39,7 +39,10 @@
 #define H5FD_PB_DEFAULT_MAX_NUM_PAGES	  	  64
 
 /** The default default replacement policy to be used by the page buffer */
-#define H5FD_PB_DEFAULT_REPLACEMENT_POLICY 	   0 /* dummy value -- replace this */
+#define H5FD_PB_DEFAULT_REPLACEMENT_POLICY 	   0 /* 0 = Least Recently Used (LRU) */
+
+/** Testing is false (turned off) by default */
+#define H5FD_PB_DEFAULT_TESTING_OFF			false
 
 
 /******************************************************************************
@@ -69,6 +72,13 @@
  *      buffer.
  *      Integer code: 0 = Least Recently Used (LRU)
  *                    1 = First In First Out (FIFO)
+ * 
+ * fapl_id (hid_t):
+ *      File-access property list for setting up the VFD stack  
+ * 
+ * testing (bool):
+ *      Flag to indicate if the page buffer VFD is being used for testing.
+ *      If true, testing functions are enabled.
  *
  ******************************************************************************
  */
@@ -84,8 +94,9 @@ typedef struct H5FD_pb_vfd_config_t {
     size_t       max_num_pages; /**< Maximum number of pages resident in the page buffer. */
     int32_t      rp;            /**< Integer code specifying the replacement policy to be used \p
                                      by the page buffer. */
-    hid_t fapl_id;              /**< File-access property list for setting up the VFD stack below the page \p
+    hid_t       fapl_id;        /**< File-access property list for setting up the VFD stack below the page \p
                                      buffer VFD. Can be H5P_DEFAULT. */
+    bool        testing;        /**< Flag to indicate if the page buffer VFD is being used for testing. */
 } H5FD_pb_vfd_config_t;
 //! <!-- [H5FD_pb_vfd_config_t_snip] -->
 
