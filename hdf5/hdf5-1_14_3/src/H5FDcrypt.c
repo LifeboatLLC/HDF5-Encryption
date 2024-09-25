@@ -153,11 +153,16 @@ typedef struct H5FD_crypt_t {
     haddr_t                  eof_down;
 
     /* encryption statistics fields */
+
+    /* Must define stats and associated functions if we get 
+     * the Phase II.
+     *                          JRM -- 9/23/24
+     */
 } H5FD_crypt_t;
 
 
 H5FD_crypt_vfd_config_t test_vfd_config = {
-    /* magic                  = */ H5FD_CRYPT_MAGIC,
+    /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
     /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
     /* plaintext_page_size    = */ H5FD_CRYPT_DEFAULT_PLAINTEXT_PAGE_SIZE,
     /* ciphertext_page_size   = */ H5FD_CRYPT_DEFAULT_CIPHERTEXT_PAGE_SIZE,
@@ -391,11 +396,6 @@ H5FD_crypt_init(void)
         H5FD__crypt_init_gcrypt_library();
     }
 
-    //if (H5FD__crypt_init_gcrypt_library(void) < 0)
-    //    HGOTO_ERROR(H5E_VFL, H5E_CANTINIT, FAIL, "unable to initialize libgcrypt");
-    
-
-
     ret_value = H5FD_CRYPT_g;
 
     FUNC_LEAVE_NOAPI(ret_value)
@@ -486,7 +486,7 @@ H5Pset_fapl_crypt(hid_t fapl_id, H5FD_crypt_vfd_config_t *vfd_config)
 
     H5FD_CRYPT_LOG_CALL(__func__);
 
-    if (H5FD_CRYPT_MAGIC != vfd_config->magic)
+    if (H5FD_CRYPT_CONFIG_MAGIC != vfd_config->magic)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
                     "invalid configuration (magic number mismatch)");
 
@@ -551,7 +551,7 @@ H5Pget_fapl_crypt(hid_t fapl_id, H5FD_crypt_vfd_config_t *config /*out*/)
     if (config == NULL)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "config pointer is null");
 
-    if (H5FD_CRYPT_MAGIC != config->magic)
+    if (H5FD_CRYPT_CONFIG_MAGIC != config->magic)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
                     "info-out pointer invalid (magic number mismatch)");
 
@@ -594,13 +594,7 @@ H5Pget_fapl_crypt(hid_t fapl_id, H5FD_crypt_vfd_config_t *config /*out*/)
     config->key_size                 = fapl_ptr->key_size;
     config->iv_size                  = fapl_ptr->iv_size;
     config->mode                     = fapl_ptr->mode;
-#if 0 /* delete this -- see comment in typedef for H5FD_crypt_vfd_config_t */
-    config->min_ciphertext_page_size = fapl_ptr->min_ciphertext_page_size;
 
-    config->eof                      = fapl_ptr->eof;
-    config->eoa                      = fapl_ptr->eoa;
-    config->checksum                 = fapl_ptr->checksum;
-#endif
 
     /* copy Key */
     if ( fapl_ptr->key_size > 0 ) {
@@ -645,7 +639,7 @@ H5FD__crypt_populate_config(H5FD_crypt_vfd_config_t *vfd_config,
     assert(fapl_out);
 
     /* Checks magic number */
-    if ( ( vfd_config ) && ( H5FD_CRYPT_MAGIC != vfd_config->magic ) )
+    if ( ( vfd_config ) && ( H5FD_CRYPT_CONFIG_MAGIC != vfd_config->magic ) )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
                             "Incorrect H5FD_crypt_vfd_config_t magic field");
 
@@ -687,24 +681,16 @@ H5FD__crypt_populate_config(H5FD_crypt_vfd_config_t *vfd_config,
             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, FAIL, 
                         "unable to allocate file access property list struct");
 
-        vfd_config->magic                  = H5FD_CRYPT_MAGIC;
+        vfd_config->magic                  = H5FD_CRYPT_CONFIG_MAGIC;
         vfd_config->version                = H5FD_CURR_CRYPT_VFD_CONFIG_VERSION;
         vfd_config->plaintext_page_size    = H5FD_CRYPT_DEFAULT_PLAINTEXT_PAGE_SIZE;
         vfd_config->ciphertext_page_size   = H5FD_CRYPT_DEFAULT_CIPHERTEXT_PAGE_SIZE;
         vfd_config->encryption_buffer_size = H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE;
         vfd_config->cipher                 = H5FD_CRYPT_DEFAULT_CIPHER;
         vfd_config->cipher_block_size      = H5FD_CRYPT_DEFAULT_CIPHER_BLOCK_SIZE;
-#if 0
-        vfd_config->key_size               = H5FD_CRYPT_DEFAULT_KEY_SIZE;
-        vfd_config->key                    = H5FD_CRYPT_DEFAULT_KEY;
-#else
-        /* Should we provide a default key? -- I would think not, hence the 
-         * following mod.  Note that I have made the key field into an array of
-         * uint8_t -- thus the key is set to all zeros since the instance of 
-         * H5FD_crypt_vfd_config_t was calloc-ed.
-         */
+
         vfd_config->key_size               = 0;
-#endif
+
         vfd_config->iv_size                = H5FD_CRYPT_DEFAULT_IV_SIZE;
         vfd_config->mode                   = H5FD_CRYPT_DEFAULT_MODE;
 
@@ -1283,7 +1269,7 @@ H5FD__crypt_open(const char *name, unsigned flags, hid_t crypt_fapl_id,
      * checking, or set up a validate function and call it here and in 
      * H5FD__crypt_populate_config().
      */
-    if (H5FD_CRYPT_MAGIC != fapl_ptr->magic)
+    if (H5FD_CRYPT_CONFIG_MAGIC != fapl_ptr->magic)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, NULL, 
                         "invalid configuration (magic number mismatch)");
 
@@ -1497,12 +1483,6 @@ H5FD__crypt_get_eoa(const H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type)
 
 done:
 
-#if 0 /* JRM */
-    fprintf(stderr, "\nH5FD__crypt_get_eoa(): eoa_up = 0x%llx, eoa_down = 0x%llx\n",
-           (unsigned long long)(file_ptr->eoa_up), 
-           (unsigned long long)(file_ptr->eoa_down));
-#endif /* JRM */
-
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__crypt_get_eoa */
@@ -1565,12 +1545,6 @@ H5FD__crypt_set_eoa(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     file_ptr->eoa_down = eoa_down;
 
 done:
-
-#if 0 /* JRM */
-    fprintf(stderr, "\nH5FD__crypt_set_eoa(): addr = 0x%llx, eoa_up = 0x%llx, eoa_down = 0x%llx\n",
-           (unsigned long long)addr, (unsigned long long)(file_ptr->eoa_up), 
-           (unsigned long long)(file_ptr->eoa_down));
-#endif /* JRM */
 
     FUNC_LEAVE_NOAPI(ret_value)
 
@@ -2561,109 +2535,71 @@ H5FD__crypt_decrypt_page(H5FD_crypt_t *file_ptr, unsigned char *ciphertext_buf,
                             unsigned char *plaintext_buf)
 {   
     char error_string[256];
+    int cipher;
+    int mode;
     gcry_cipher_hd_t handle; 
     gcry_error_t err;
     herr_t   ret_value = SUCCEED; /* Return value */
 
     FUNC_ENTER_NOAPI(FAIL)
     
-    /***********************************/
-    /********** AES256 CIPHER **********/
-    /***********************************/
-    if ( file_ptr->fa.cipher == 0 ) { 
+    /* Checking what cipher the file needs for decryption */
+    if (file_ptr->fa.cipher == 0) 
+        cipher = GCRY_CIPHER_AES256;
 
-        /* Initializes the handle with the cipher and mode (AES256, CBC) */
-        if ( 0 != (err = gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
-                                            GCRY_CIPHER_MODE_CBC, 0)) ) {
+    else if (file_ptr->fa.cipher == 1)
+        cipher = GCRY_CIPHER_TWOFISH;
 
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Sets the key to the handle for the decryption */
-        if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) )
-        {
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                                gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /*  Sets the IV to the handle for decryption using the IV read above */
-        if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Decrypts the ciphertext page using the handle */
-        if ( 0 != (err = gcry_cipher_decrypt(
-                handle,                                /* cipher config */
-                plaintext_buf,                         /* plaintext */
-                file_ptr->fa.plaintext_page_size,      /* plaintext size */
-                ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */
-                file_ptr->fa.plaintext_page_size       /* ciphertext size */
-                )) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        gcry_cipher_close(handle);
-
-    } 
-
-    /************************************/
-    /********** TWOFISH CIPHER **********/
-    /************************************/
-    else if ( file_ptr->fa.cipher == 1 ) { 
-
-        /* Initializes the handle with the cipher and mode (TWOFISH, CBC)*/
-        if ( 0 != (err = gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
-                                            GCRY_CIPHER_MODE_CBC, 0)) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Sets the key to the handle for the decryption */
-        if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) )
-        {
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Sets the IV to the handle for decryption using the IV read above */
-        if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Decrypts the ciphertext page using the handle */
-        if ( 0 != (err = gcry_cipher_decrypt(
-                handle,                                /* cipher config */
-                plaintext_buf,                         /* plaintext */
-                file_ptr->fa.plaintext_page_size,      /* plaintext size */
-                ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */
-                file_ptr->fa.plaintext_page_size       /* ciphertext size */
-                )) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-    }
-    else {
-
+    else
         HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "Unknown cipher");
+
+    /* Checking what mode the file needs for decryption */
+    if (file_ptr->fa.mode == 0)
+        mode = GCRY_CIPHER_MODE_CBC;
+    
+    else
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "Unknown mode");
+
+
+    /* Initializes the handle with the cipher and mode (AES256, CBC) */
+    if ( 0 != (err = gcry_cipher_open(&handle, cipher, mode, 0)) ) {
+
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                        gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
     }
+
+    /* Sets the key to the handle for the decryption */
+    if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) )
+    {
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                            gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
+    }
+
+    /*  Sets the IV to the handle for decryption using the IV read above */
+    if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
+
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                        gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
+    }
+
+    /* Decrypts the ciphertext page using the handle */
+    if ( 0 != (err = gcry_cipher_decrypt(
+            handle,                                /* cipher config */
+            plaintext_buf,                         /* plaintext */
+            file_ptr->fa.plaintext_page_size,      /* plaintext size */
+            ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */
+            file_ptr->fa.plaintext_page_size       /* ciphertext size */
+            )) ) {
+
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                        gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
+    }
+
+    gcry_cipher_close(handle);
 
 done:
 
@@ -2711,117 +2647,75 @@ H5FD__crypt_encrypt_page(H5FD_crypt_t *file_ptr, unsigned char *ciphertext_buf,
                          const unsigned char *plaintext_buf)
 {
     char error_string[256];
+    int cipher;
+    int mode;
     gcry_cipher_hd_t handle;
     gcry_error_t     err;
     herr_t   ret_value = SUCCEED; /* Return value */
 
     FUNC_ENTER_NOAPI(FAIL)
 
-    /***********************************/
-    /********** AES256 CIPHER **********/
-    /***********************************/
-    if (file_ptr->fa.cipher == 0) {
+    /* Checking what cipher the file needs for decryption */
+    if (file_ptr->fa.cipher == 0) 
+        cipher = GCRY_CIPHER_AES256;
 
-        /* Initializes the handle with the cipher and mode (AES256, CBC) */
-        if ( 0 != (err = gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
-                                            GCRY_CIPHER_MODE_CBC, 0)) ) {
+    else if (file_ptr->fa.cipher == 1)
+        cipher = GCRY_CIPHER_TWOFISH;
 
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                            gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
+    else
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "Unknown cipher");
 
-        /* Sets the key to the handle for the encryption */
-        if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) ) 
-        {
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+    /* Checking what mode the file needs for decryption */
+    if (file_ptr->fa.mode == 0)
+        mode = GCRY_CIPHER_MODE_CBC;
+    
+    else
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "Unknown mode");
+
+
+
+    /* Initializes the handle with the cipher and mode (AES256, CBC) */
+    if ( 0 != (err = gcry_cipher_open(&handle, cipher, mode, 0)) ) {
+
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
                         gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        } 
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
+    }
 
-        /* Generates a random IV (nonce = number used once) for each page */
-        gcry_create_nonce(ciphertext_buf, 16);
-
-        /* Set the IV to the handle */
-        if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Encrypts the plaintext page using the handle */
-        if ( 0 != (err = gcry_cipher_encrypt(
-                handle,                                /* cipher config */
-                ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */ 
-                file_ptr->fa.plaintext_page_size,      /* ciphertext size */
-                plaintext_buf,                         /* plaintext */
-                file_ptr->fa.plaintext_page_size       /* plaintext size */
-                )) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        gcry_cipher_close(handle);
-
+    /* Sets the key to the handle for the encryption */
+    if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) ) 
+    {
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                    gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
     } 
 
-    /************************************/
-    /********** TWOFISH CIPHER **********/
-    /************************************/
-    else if (file_ptr->fa.cipher == 1) { 
+    /* Generates a random IV (nonce = number used once) for each page */
+    gcry_create_nonce(ciphertext_buf, 16);
 
-        /* Initializes the handle with the cipher and mode (TWOFISH, CBC) */
-        if ( 0 != (err = gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
-                                            GCRY_CIPHER_MODE_CBC, 0)) ) {
+    /* Set the IV to the handle */
+    if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
 
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Sets the key to the handle for the encryption */
-        if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) ) 
-        {
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Generates a random IV (nonce = number used once) for each page */
-        gcry_create_nonce(ciphertext_buf, 16);
-
-        // Set the IV to the handle
-        if ( 0 != (err = gcry_cipher_setiv(handle, ciphertext_buf, 16)) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        /* Encrypts the plaintext page using the handle */
-        if ( 0 != (err = gcry_cipher_encrypt(
-                handle,                                /* cipher config */
-                ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */ 
-                file_ptr->fa.plaintext_page_size,      /* ciphertext size */
-                plaintext_buf,                         /* plaintext */
-                file_ptr->fa.plaintext_page_size       /* plaintext size */
-                )) ) {
-
-            snprintf(error_string, (size_t)256, "gcrypt error: %s", 
-                        gcry_strerror(err));
-            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, error_string);
-        }
-
-        gcry_cipher_close(handle);
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                    gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
     }
 
-    else {
+    /* Encrypts the plaintext page using the handle */
+    if ( 0 != (err = gcry_cipher_encrypt(
+            handle,                                /* cipher config */
+            ciphertext_buf + file_ptr->fa.iv_size, /* ciphertext */ 
+            file_ptr->fa.plaintext_page_size,      /* ciphertext size */
+            plaintext_buf,                         /* plaintext */
+            file_ptr->fa.plaintext_page_size       /* plaintext size */
+            )) ) {
 
-        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "Unknown cipher");
+        snprintf(error_string, (size_t)256, "gcrypt error: %s", 
+                    gcry_strerror(err));
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, FAIL, "%s", error_string);
     }
+
+    gcry_cipher_close(handle);
 
 done:
 
