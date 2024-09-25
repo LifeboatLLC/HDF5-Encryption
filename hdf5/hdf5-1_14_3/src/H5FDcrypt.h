@@ -23,8 +23,11 @@
 /** Identifier for the page buffer VFD */
 #define H5FD_CRYPT_VALUE H5_VFD_CRYPT
 
-/** Semi-unique constant used to help identify structure pointers */
-#define H5FD_CRYPT_MAGIC                                0x504200 
+/** Semi-unique constant used to help identify Encryption Config structure pointers */
+#define H5FD_CRYPT_CONFIG_MAGIC                         0x504200
+
+/** Semi-unique constant used to help identify Encryption structure pointers */
+#define H5FD_CRYPT_MAGIC                                0x504201 
 
 /** The version of the H5FD_crypt_vfd_config_t structure used */
 #define H5FD_CURR_CRYPT_VFD_CONFIG_VERSION 	            1
@@ -136,11 +139,7 @@ typedef struct H5FD_crypt_vfd_config_t {
     size_t cipher_block_size;        
     size_t key_size;                
 
-#if 0 /* original version */
-    void *key;                      /**< Pointer to the key. */
-#else /* put key in a fixed size butter to simplify FAPL management. */
-     uint8_t key[H5FD_CRYPT_MAX_KEY_SIZE];
-#endif
+    uint8_t key[H5FD_CRYPT_MAX_KEY_SIZE];
 
     size_t iv_size;                 
     int mode;          
