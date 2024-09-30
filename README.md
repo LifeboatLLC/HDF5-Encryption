@@ -7,7 +7,7 @@ Here are instructions how to build in "place".
 
   `git clone git@github.com:LifeboatLLC/HDF5-Encryption.git`
 
-* Change directory to the build the library in place
+* Change directory to build the library in place
 
   `cd HDF5-Encryption/hdf5/hdf5-1_14_3`
 
@@ -21,4 +21,12 @@ Here are instructions how to build in "place".
 
   `export LD_LIBRARY_PATH=/gcrypt_install_dir/lib/`
 
+* Run the `autogen.sh` script to create `configure` script and several header and source files.
+* Build as usual
 
+  `./configure`
+  `make`
+  `make check`
+  `make install`
+
+  Library willbe installed in the `hdf5` subdirectory
