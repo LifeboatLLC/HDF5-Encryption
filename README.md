@@ -55,7 +55,7 @@ Below are instructions how to build in "place" the version of HDF5 with encrypti
 
   * Check that `h5ex_d_rdwr.h5` is cleartext now.
     
-  * Note: `h5dump` is smart enough to dump both ciphertext and cleartext files without specifyng the driver.
+  * Try `h5dump` on both files. The tool is smart enough to dump both ciphertext and cleartext files without specifyng the required driver driver.
 
   * Repack clear text file into encrypted file
 
