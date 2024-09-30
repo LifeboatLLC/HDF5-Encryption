@@ -626,7 +626,7 @@ h5tools_set_fapl_vfd(hid_t fapl_id, h5tools_vfd_info_t *vfd_info)
                 };
                 H5FD_crypt_vfd_config_t  crypt_vfd_config =
                 {
-                    /* magic                  = */ H5FD_CRYPT_MAGIC,
+                    /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
                     /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
                     /* plaintext_page_size    = */ 4096,
                     /* ciphertext_page_size   = */ 4112,
