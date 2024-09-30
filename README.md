@@ -42,7 +42,7 @@ Here are instructions how to build in "place".
 
    `./a.out`
 
-  * Use `head` command to see encryption plains text header
+  * Use `head` command to see encryption plaintext header
 
     `head h5ex_d_rdwr_crypt.h5`
 
@@ -52,7 +52,7 @@ Here are instructions how to build in "place".
 
      `../../../bin/h5repack --src-vfd-name crypt h5ex_d_rdwr_crypt.h5 h5ex_d_rdwr.h5`
 
-    * Check that ` h5ex_d_rdwr.h5` is cleartext now; `h5dump` is smart enough to dump both ciptertext and cleartext files without specifyng the driver.
+    * Check that `h5ex_d_rdwr.h5` is cleartext now; `h5dump` is smart enough to dump both ciptertext and cleartext files without specifyng the driver.
 
     * Reapck clear text file inot encrypted file
 
