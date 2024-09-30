@@ -46,19 +46,19 @@ Here are instructions how to build in "place".
 
     `head h5ex_d_rdwr_crypt.h5`
 
-   * Use tools to see the content and to repack the file to cleartext and back to encrypted one
+  * Use tools to see the content and to repack the file to cleartext and back to encrypted one
 
      `../../../bin/h5dump  h5ex_d_rdwr_crypt.h5`
 
      `../../../bin/h5repack --src-vfd-name crypt h5ex_d_rdwr_crypt.h5 h5ex_d_rdwr.h5`
      
 
-    * Check that `h5ex_d_rdwr.h5` is cleartext now.
+  * Check that `h5ex_d_rdwr.h5` is cleartext now.
     
-    * Note: `h5dump` is smart enough to dump both ciphertext and cleartext files without specifyng the driver.
+  * Note: `h5dump` is smart enough to dump both ciphertext and cleartext files without specifyng the driver.
 
-    * Repack clear text file into encrypted file
+  * Repack clear text file into encrypted file
 
       `../../../bin/h5repack --dst-vfd-name crypt h5ex_d_rdwr.h5 h5ex_d_rdwr_crypt_new.h5`
 
-     * Run `ls -al *.h5` to see the size of the files. 
+  * Run `ls -al *.h5` to see the size of the files. 
