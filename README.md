@@ -25,8 +25,37 @@ Here are instructions how to build in "place".
 * Build as usual
 
   `./configure`
+  
   `make`
+  
   `make check`
+  
   `make install`
 
   Library willbe installed in the `hdf5` subdirectory
+
+ * Change directory to the installed examples and compile and run the example to get `h5ex_d_rdwr_crypt.h5` file
+   
+   ` cd hdf5/share/hdf5_examples/c`
+
+   `../../../bin/h5cc h5ex_d_rdwr_crypt.c`
+
+   `./a.out`
+
+  * Use `head` command to see encryption plains text header
+
+    `head h5ex_d_rdwr_crypt.h5`
+
+   * Use tools to see the content and to repack the file to cleartext and back to encrypted one
+
+     `../../../bin/h5dump  h5ex_d_rdwr_crypt.h5`
+
+     `../../../bin/h5repack --src-vfd-name crypt h5ex_d_rdwr_crypt.h5 h5ex_d_rdwr.h5`
+
+    * Check that ` h5ex_d_rdwr.h5` is cleartext now; `h5dump` is smart enough to dump both ciptertext and cleartext files without specifyng the driver.
+
+    * Reapck clear text file inot encrypted file
+
+      `../../../bin/h5repack --dst-vfd-name crypt h5ex_d_rdwr.h5 h5ex_d_rdwr_crypt_new.h5`
+
+     * Run `ls -al *.h5` to see the size of the files. 
