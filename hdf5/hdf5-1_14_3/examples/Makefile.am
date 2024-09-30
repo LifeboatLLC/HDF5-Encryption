@@ -50,7 +50,7 @@ TEST_EXAMPLES_SCRIPT=$(INSTALL_SCRIPT_FILES)
 # List all file that should be installed in examples directory
 INSTALL_FILES = h5_write.c h5_read.c h5_extend_write.c h5_chunk_read.c h5_compound.c \
             h5_crtgrpd.c h5_subset.c h5_cmprss.c h5_rdwt.c h5_crtgrpar.c h5_extend.c \
-            h5_crtatt.c h5_crtgrp.c h5_crtdat.c \
+            h5_crtatt.c h5_crtgrp.c h5_crtdat.c h5ex_d_rdwr_crypt.c\
             h5_group.c h5_select.c h5_attribute.c h5_mount.c h5_drivers.c \
             h5_reference_deprec.c h5_ref_extern.c h5_ref_compat.c h5_ref2reg_deprec.c \
             h5_extlink.c h5_elink_unix2win.c h5_shared_mesg.c h5_debug_trace.c \
