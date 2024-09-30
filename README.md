@@ -14,7 +14,11 @@ Change directory to the build the library in place
 Set compiler and linker flags to find `gcyrpt` library
 
 export CFLAGS=-I/gcrypt_install_dir/include
+
 export LDFLAGS=-L/gcrypt_install_dir/lib/
+
 export LIBS=-lgcrypt
+
 export LD_LIBRARY_PATH=/gcrypt_install_dir/lib/
+
 
