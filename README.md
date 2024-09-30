@@ -1,7 +1,7 @@
 # HDF5-Encryption
-This repo to hold HDF5 Encryption VFD prototype.
+This repo holds HDF5 Encryption VFD prototype amd documentation.
 
-Here are instructions how to build in "place".
+Below are instructions how to build in "place" the version of HDF5 with encryption enables. Please notice that currently key and magic nuber are hard coded.
 
 * Checkout from the reporistory
 
