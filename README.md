@@ -51,6 +51,7 @@ Here are instructions how to build in "place".
      `../../../bin/h5dump  h5ex_d_rdwr_crypt.h5`
 
      `../../../bin/h5repack --src-vfd-name crypt h5ex_d_rdwr_crypt.h5 h5ex_d_rdwr.h5`
+     
 
     * Check that `h5ex_d_rdwr.h5` is cleartext now.
     
