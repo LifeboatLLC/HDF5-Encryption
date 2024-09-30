@@ -34,7 +34,7 @@ Below are instructions how to build in "place" the version of HDF5 with encrypti
 
   Library willbe installed in the `hdf5` subdirectory
 
- * Change directory to the installed examples and compile and run `h5ex_d_rdwr_crypt.c` to get `h5ex_d_rdwr_crypt.h5` file
+ * Change directory to the installed examples and compile and run `h5ex_d_rdwr_crypt.c` to create the `h5ex_d_rdwr_crypt.h5` file.
    
    ` cd hdf5/share/hdf5_examples/c`
 
