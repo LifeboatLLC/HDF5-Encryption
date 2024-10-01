@@ -61,8 +61,8 @@ static hid_t H5FD_CRYPT_g = 0;
  *	actual I/O on a file).
  *
  * ciphertext_buf:  
- *      Pointer to the dynamically allocated buffer used to storing encrypted 
- *      data either loaded from file and then decrypted, on a read, or 
+ *      Pointer to the dynamically allocated buffer used to store encrypted 
+ *      data either loaded from file to be decrypted on a read, or 
  *      encrypted and then written to file on a write.
  *
  *      This buffer is allocated at file open time, and is of size 
@@ -78,7 +78,7 @@ static hid_t H5FD_CRYPT_g = 0;
  *
  * ciphertext_offset: 
  *      The encrypted file has two header pages, the first of which contains 
- *      configuration data. The second header page contains known encrypted 
+ *      configuration data. The second header page contains a known encrypted 
  *      phrase and is used to verify that the supplied key is correct.
  *
  *      As a result, the encrypted HDF5 file proper starts two ciphertext
@@ -339,6 +339,10 @@ H5FL_DEFINE_STATIC(H5FD_crypt_vfd_config_t);
  *              allocate a pool of memory that is protected from swapping to 
  *              disk and can be wiped in a secure manner. Useful for storing 
  *              sensitive data like keys.
+ * 
+ *              NOTE: This iteration doesn't use the secure memory pool. More 
+ *              investigation on how to handle key management is needed before
+ *              this can be implemented.
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -798,13 +802,12 @@ done:
  * Purpose:     Reads the specified pages from the underlying file, decrypt 
  *              them, and returns the associated plaintext.
  *
- *              Note that size must be a multiple of the plaintext page size, 
- *              and that addr must lie on a plaintext page boundary. Due to the
- *              first two pages being used to store the encryption 
- *              configuration data and the test encryption phrase, the offset 
- *              is padded to take the address and add 2 * ciphertext page size 
- *              to skip the first two pages.
- *
+ *              Size must be a multiple of the plaintext page size, and addr 
+ *              must lie on a plaintext page boundary. Because of the first 
+ *              two pages being used to store the encryption configuration data
+ *              and the test encryption phrase, file_ptr->ciphertext_offset is
+ *              used to adjust the addr to skip over those first two pages. 
+ * 
  * Return:      Success:    SUCCEED
  *                          The read result is written into the BUF buffer
  *                          which should be allocated by the caller.
@@ -959,8 +962,11 @@ done:
  *              corresponding ciphertext pages to the equivalent location in 
  *              the encrypted file.
  *
- *              Note that size must be a multiple of the plaintext page size, 
- *              and that addr must lie on a plaintext page boundary.
+ *              Size must be a multiple of the plaintext page size, and addr 
+ *              must lie on a plaintext page boundary. Because of the first 
+ *              two pages being used to store the encryption configuration data
+ *              and the test encryption phrase, file_ptr->ciphertext_offset is
+ *              used to adjust the addr to skip over those first two pages. 
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -1197,6 +1203,12 @@ done:
  * Function:    H5FD__crypt_open
  *
  * Purpose:     Create and/or opens a file as an HDF5 file.
+ * 
+ *              NOTE: On file creation the two configuration pages are 
+ *              constructed form the information contained in the FAPL and 
+ *              written to the new file. The first page contains the 
+ *              configuration details, and the second page encrypts the test
+ *              phrase using the cipher configuration provided.
  *
  * Return:      Success:    A pointer to a new file data structure. The public 
  *                          fields will be initialized by the caller, which is 
@@ -2361,8 +2373,8 @@ done:
  *              configuration details (plaintext size, ciphertext size, 
  *              encryption buffer size, cipher, cipher block size, key size, 
  *              iv size, mode of operation, minimum ciphertext page size). Then 
- *              it validates the configuration details by comparing them with 
- *              the fapl information. 
+ *              validates the configuration details by comparing them with 
+ *              the FAPL information. 
  * 
  *              If the validation fails, return FAIL. Otherwise return SUCCEED.
  *
@@ -2504,12 +2516,12 @@ done:
  *              a handle variable of type gcry_cipher_hd_t which is used to 
  *              store the context for the cryptographic operations.
  *
- *              The key is loaded from the fapl (test_vfd_config struct) and 
- *              is set to the handle for encryption.
+ *              The key is loaded from the fapl and is set to the handle for 
+ *              encryption.
  *
- *              An Initialization Vector (IV) is generated and is stored in the
- *              first block of the ciphertext buffer, and then also set to the 
- *              handle for encryption.
+ *              If used, an Initialization Vector (IV) is generated and stored 
+ *              in the first block of the ciphertext buffer, then set to the 
+ *              handle to be used in the  decryption.
  *
  *              The input data (the ciphertext page data starting after the IV 
  *              block in the ciphertext_buf) is decrypted and stored in the 
@@ -2619,9 +2631,9 @@ done:
  *              The key is loaded from the fapl (test_vfd_config struct) and is
  *              set to the handle for encryption.
  *
- *              An Initialization Vector (IV) is generated and is stored in the 
- *              first block of the ciphertext buffer, and then also set to the 
- *              handle for encryption.
+ *              If used an Initialization Vector (IV) is generated and stored 
+ *              in the first block of the ciphertext buffer, then set to the 
+ *              handle to be used in the encryption.
  *
  *              The input data (plaintext page in the plaintext_buf) is 
  *              encrypted and stored in the output buffer (ciphertext_buf) 
@@ -2798,8 +2810,9 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__crypt_write_second_page
  *
- * Purpose:     Encrypts the test phrase and writes it (and the IV in the first
- *              block on the page) to the second page of the file.
+ * Purpose:     Encrypts the test phrase and writes it (and the associated IV,
+ *              if there is one, in the first block on the page) to the second 
+ *              page of the file.
  *
  * Return:      SUCCEED/FAIL
  *
