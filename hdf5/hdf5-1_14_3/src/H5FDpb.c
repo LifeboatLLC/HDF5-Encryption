@@ -56,35 +56,35 @@
 /******************************************************************************
  *Bitfield for the PageHeader flags
  *
- * A bitfield that is used to indicate the status of the PageHeader (defined
- * further below).
+ * A bitfield used to indicate the status of the H5FD_pb_pageheader_t structure
+ * (defined in the next structure) and the page it contains. 
  *
  * DIRTY_FLAG
- *      Used to indicate if the page inside the PageHeader has been
- *      modified since it was read from the file.
- *      (if marked 1 then it's dirty)
+ *      Indicates the page inside the H5FD_pb_pageheader_t structure has been
+ *      modified and is more current than the version of the page in the file.
  *
  * BUSY_FLAG
- *      Used to indicate if the PageHeader is currently being used,
- *      either being read from, or being written to.
- *      (if marked 1  then it's busy)
+ *      Indicates the H5FD_pb_pageheader_t structure is currently being used, 
+ *      either being read from or written to, or is about to be read from or 
+ *      written to.
  *
  * READ_FLAG
- *      Used to indicate if the PageHeader is currently being read from
- *      (if marked 1 it's being read from)
+ *      Indicates the H5FD_pb_pageheader_t structure is currently being read 
+ *      from.
  *
  * WRITE_FLAG 
- *      set to indicate if the PageHeader is currently being written to
- *      (if marked 1 it's being written to)
+ *      Indicates the H5FD_pb_pageheader_t structure is currently being written 
+ *      to.
  *
  * INVALID_FLAG
- *      Used to indicated if the PageHeader has been marked as invalid.
- *      A PageHeader is marked as invalid when a page is written straight
- *      through to the file and a version of the page is currently in the Page
- *      Buffer. This makes the version in the Page Buffer out of data, and the
- *      INVALID_FLAG is used to make sure this version is never written to the
- *      file.
- *      (if marked 1 then it's invalid)
+ *      Indicates the page inside the H5FD_pb_pageheader_t structure has been 
+ *      flagged as invalid. An invalid page means that a middle write has been
+ *      done on that page directly to the file making the version in the page
+ *      buffer out of date. 
+ *      If flagged as invalid the H5FD_pb_pageheader_t structure is removed 
+ *      from the hash table to not show up in searches and is adjusted in the
+ *      replacement policy list to be the next H5FD_pb_pageheader_t to be 
+ *      evicted.
  ******************************************************************************
  */
 #define H5FD_PB_DIRTY_FLAG      0X0001    /* 0b00000001 */
@@ -104,10 +104,12 @@ static hid_t H5FD_PB_g = 0;
  *
  * Description:
  *
- * The page header structure is used to store the metadata for a page that is
- * stored in the page buffer, and contains a pointer to the actual contents of
- * the page. The hash table and replacement policy use this structure as nodes to keep
- * track of the buffers in use and the order of pages to be evicted.
+ * The H5FD_pb_pageheader_t structure is used to store a page from the file in
+ * the page buffer, and details about the page.
+ * 
+ * The hash table and replacement policy (these two structures are in the 
+ * H5FD_pb_t structure) use this structure as nodes to track the pages in the 
+ * page buffer and the order of pages to be evicted.
  *
  * Fields:
  *
@@ -115,30 +117,28 @@ static hid_t H5FD_PB_g = 0;
  *      Magic number to identify this struct. Must be H5FD_PB_PAGE_HEADER_MAGIC
  *
  * hash_code (uint32_t):
- *      Key used to determine which bucket in the hash table this page header
- *      gets stored in. The hash code is calculated by taking the page addr
- *      and cutting off the bottom bits, then right shifting the remaining bits
- *      to get the page number (this is computationally easier than division).
- *      Then the page number is modded by the number of buckets in the hash
- *      table, which results in the bucket number.
+ *      Key used to determine which bucket in the hash table this instance of
+ *      H5FD_pb_pageheader_t is stored in. The method of calculating the hash
+ *      code is described in the H5FD__pb_calc_hash_code() function's header
+ *      comment.
  *
  * ht_next_ptr (H5FD_pb_pageheader_t *):
- *      Pointer to the next page header in the hash table bucket, or NULL if
- *      this page header is the head.
+ *      Pointer to the next H5FD_pb_pageheader_t structure in the hash table 
+ *      bucket, or NULL if this instance of the strucure is the tail.
  *
  * ht_prev_ptr (H5FD_pb_pageheader_t *):
- *      Pointer to the previous page header in the hash table bucket, or NULL
- *      if this page header is the tail.
+ *      Pointer to the previous H5FD_pb_pageheader_t structure in the hash 
+ *      table bucket, or NULL if this instance of the strucutre is the head.
  *
  * rp_next_ptr (H5FD_pb_pageheader_t *):
- *      Pointer to the next page header in the replacement policy list, or NULL
- *      if this page header is the head (i.e. this page header is the last one
- *      in the list to be evicted).
+ *      Pointer to the next H5FD_pb_pageheader_t structure in the replacement 
+ *      policy list, or NULL if this instance of the structure is the tail 
+ *      (i.e. this instance is the next one to be evicted).
  *
  * rp_prev_ptr (H5FD_pb_pageheader_t *):
- *      Pointer to the previous page header in the replacement policy list, or
- *      NULL if this page header is the tail (i.e. this page header is the next
- *      one to be evicted next).
+ *      Pointer to the previous H5FD_pb_pageheader_t structure in the 
+ *      replacement policy list, or NULL if this instance is the head 
+ *      (i.e. this instance is the most recently added to the list).
  *
  * flags (int32_t):
  *      Integer field used to store various flags that indicate the state of
@@ -151,16 +151,17 @@ static hid_t H5FD_PB_g = 0;
  *          - 0b00010000: invalid   (contains old data, page must be discarded)
  *
  * page_addr (haddr_t):
- *      Integer value indicating the addr of the page from the beginning of
- *      the file in bytes. This is used to determine the location of the page,
- *      and to calculate the hash key.
+ *      Integer value indicating the addr of the page (also can be thought of 
+ *      as the offset from the beginning of the file in bytes). This is the 
+ *      location of the page in the file, and is used to identify the page and
+ *      calculate the hash key.
  *
  * type (H5FD_mem_t):
  *      Type of memory in the page.  This is the type associated with the 
  *      I/O request that occasioned the load of the page into the page 
  *      buffer.
  *
- * page (unsigned char *):
+ * page (unsigned char):
  *      buffer containing the actual data of the page. This is the data that
  *      is read from the file and stored in the page buffer.
  *
@@ -209,58 +210,61 @@ typedef struct H5FD_pb_pageheader_t {
  *	actual I/O on a file).
  *
  * Hash Table Description:
- *      A structure that contains an array of doubly linked lists used to store
- *      the page headers that have an active page in the buffer. Random I/O 
- *      requests come in and the page buffer turns them into paged I/O requests.
- *      When there is a partial page in the request, the full page that 
- *      contains the partial page must be loaded and those full pages are kept
- *      here in the hash table. The number of buckets must be a power of 2.
+ *      The hash table indexes the valid pages that currently reside in the 
+ *      page buffer for quick retrieval. The hash table uses a simple hash 
+ *      function (described in the H5FD__pb_calc_hash_code() function's header
+ *      comment) to determine which bucket in the hash table a 
+ *      H5FD_pb_pageheader_t instance should be stored in.
+ * 
+ *      The number of buckets must be a power of 2.
  *
  *      NOTE: The number of buckets in the hash table is currently fixed, but
  *      will be made configurable in future versions.
  *
  * Hast Table Fields:
  *      index:
- *          An integer value used to determine which bucket in the hash table
- *          a page header should be stored in based on its hash code.
+ *          An integer value to signify which bucket in the hash table we are
+ *          currently looking at.
  * 
  *      num_pages_in_bucket:
- *          An integer value used to keep track of the number of pages that are
- *          stored in the bucket. This is a statistic used for debugging and
- *          performance analysis.
+ *          An integer value to track of the number of pages that are stored in
+ *          the bucket. This is a statistic used for debugging andperformance 
+ *          analysis.
  *
  *      ht_head_ptr:
  *          Pointer to the head of the doubly linked list of page headers in
- *          the bucket. The head is where page headers are inserted into the
- *          bucket.
+ *          the bucket. 
+ * 
+ *      NOTE: the tail pointers for the hash table buckets are not needed, so 
+ *            they are not included in the structure.
+ * 
  *
  * Replacement Policy Description:
- *      A doubly linked list data structure used to store the page headers and
- *      determine which page header will evict its page to store a new page
- *      when a page must be read into the buffer. It will support multiple
- *      replacement policies, such as LRU, FIFO, etc.
- *      LRU is the default replacement policy.
- *      NOTE: Currenlty LRU is the only replacement policy implemented.
+ *      A doubly linked list data structure used to track all 
+ *      H5FD_pb_pageheader_t instances and determine eviction order based on
+ *      the replacement policy used.
+ * 
+ *      NOTE: Currenlty LRU (least recently used) and FIFO (first-in first-out) 
+ *            are the replacement policies implemented.
  *
  * Replacement Policy Fields:
  *      rp_policy:
  *          An integer value used to determine which replacement policy will be
- *          used. 0 is for LRU, 1 is for FIFO, etc.
+ *          used. 
+ *          0 = LRU 
+ *          1 = FIFO 
  *
  *      rp_head_ptr:
- *          Pointer to the head of the doubly linked list of page headers in
- *          the replacement policy list. The head is the location that page
- *          headers are added to the list when created. Depending on the
- *          selected replacement policy, page headers may be moved to the head
- *          of the list when accessed again (such as Least Recently Used (LRU)
- *          policy).
+ *          Pointer to the replacement policy list's head of 
+ *          H5FD_pb_pageheader_t structures. The head is the location in the 
+ *          list where the structures are added to.
  *
  *      rp_tail_ptr:
- *          Pointer to the tail of the doubly linked list of page headers in
- *          the replacement policy list. The tail is the location that page
- *          headers are selected to have their pages evicted from the page
- *          buffer, when a new page must be read into the page buffer.
- *
+ *          Pointer to the replacement policy list's tail of 
+ *          H5FD_pb_pageheader_t structures. The tail is the location in the 
+ *          lsit where the structures are selected to be evicted.
+ * 
+ * 
  * EOA management:
  *
  * The page buffer VFD introduces an issue with respect to EOA management.
@@ -287,8 +291,8 @@ typedef struct H5FD_pb_pageheader_t {
  *      next page boundary.  As with eoa_up, this alue is set to zero at 
  *      file open time, and retains that value until the first set eoa call.
  *
+ * 
  * Page Buffer Statistics Fields:
- *
  *
  * num_pages (size_t):
  *      The total number of pages that were stored in the page buffer over the
@@ -324,9 +328,8 @@ typedef struct H5FD_pb_pageheader_t {
  *      performance analysis.
  *
  * total_evictions (size_t):
- *      The total number of times a page was evicted from the buffer to make
- *      room for a new page. This is a statistic used for debugging and
- *      performance analysis.
+ *      The total number of times a page was evicted from the page buffer. 
+ *      This is a statistic used for debugging and performance analysis.
  *
  * total_dirty (size_t):
  *      The total number of pages that were marked as dirty. This is a
@@ -562,7 +565,7 @@ H5FL_DEFINE_STATIC(H5FD_pb_vfd_config_t);
  * Function:    H5FD_pb_init
  *
  * Purpose:     Initialize the page buffer driver by registering it with 
- *		the library.
+ *		        the library.
  *
  * Return:      Success:    The driver ID for the page buffer driver.
  *              Failure:    Negative
@@ -780,7 +783,7 @@ done:
  * Purpose:    Populates a H5FD_pb_vfd_config_t structure with the provided
  *             values, supplying defaults where values are not provided.
  *
- * Return:    Non-negative on success/Negative on failure
+ * Return:     Non-negative on success/Negative on failure
  *
  *-------------------------------------------------------------------------
  */
@@ -941,6 +944,8 @@ done:
  * Purpose:     Reads SIZE bytes of data from the page buffer and/or the 
  *		        underlying VFD beginning at address ADDR, into buffer 
  *              BUF according to data transfer properties in DXPL_ID.
+ * 
+ *              Turns random I/O read requests into paged I/O read requests.
  *
  * Return:      Success:    SUCCEED
  *                          The read result is written into the BUF buffer
@@ -966,8 +971,8 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
     haddr_t    middle_start_addr  = HADDR_UNDEF;    
     size_t     middle_size        = 0;
     uint64_t   middle_page_count  = 0;
-    uint64_t   middle_read_count = 0;            /* used to calculate addrs when multiple middles */
-    uint64_t   middle_check_count = 0;           /* used to calculate addrs when multiple middles */
+    uint64_t   middle_read_count = 0;            /* for calculating addrs in multi-paged middles */
+    uint64_t   middle_check_count = 0;           /* counts and checks if pages exist in the ht */
     haddr_t    tail_start_addr    = HADDR_UNDEF;
     size_t     tail_size          = 0;
     haddr_t    addr_of_remainder;                /* Used to calculate if head, middle, and tails exist */
@@ -975,7 +980,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
     haddr_t    expected_addr;
     uint32_t   hash_code;
     size_t     read_count         = 0;           /* total count of all writes */
-    haddr_t    current_addr;                     /* used to track addr for multiple middles */
+    haddr_t    current_addr;                     /* tracks addr for multi-paged middles */
     size_t     accumulated_size;                 /* size of straight through read middles */
     haddr_t    accumulated_addr;                 /* addr for straight through read middles */
 
@@ -1039,7 +1044,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
 
 
 
-    /***** Checks if a middle or middles exits *****/
+    /***** Checks if a middle exits *****/
 
     if ( ( size_of_remainder > 0 ) && ( ( size_of_remainder / file_ptr->fa.page_size ) > 0 )) {
 
@@ -1076,7 +1081,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
 
 
 
-    /***** Check the head, middle(s), and tail sizes and starting addrs *****/
+    /***** Check the head, middle, and tail sizes and starting addrs *****/
 
     assert( head_size + middle_size + tail_size == size );
 
@@ -1128,7 +1133,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
             if ( NULL == ( head = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, head_page_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Head page could not be loaded");
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure the H5FD_pb_pageheader_t structure is not busy or invalid */
             assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
             assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
 
@@ -1138,7 +1143,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
         }
         else {
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure the H5FD_pb_pageheader_t structure is not busy or invalid */
             assert( head );
             assert( head->magic == H5FD_PB_PAGEHEADER_MAGIC );
             assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
@@ -1177,14 +1182,14 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
         accumulated_size = 0;
         accumulated_addr = HADDR_UNDEF;
 
-        /* Iterates through all middles */
+        /* Iterates through all pages in the middle */
         for ( middle_check_count = 0; middle_check_count < middle_page_count; middle_check_count++ ) {
 
             hash_code = H5FD__pb_calc_hash_code( file_ptr, current_addr );
 
             middle = H5FD__pb_ht_search_pageheader( file_ptr, current_addr, hash_code );
 
-            /* If the middle doesn't exist in ht then it gets added to accumulator*/
+            /* If a middle page doesn't exist in ht then it gets added to accumulator*/
             if ( middle == NULL ) {
 
                 if ( accumulated_size == 0 )
@@ -1195,11 +1200,11 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
             }
 
             /**
-             * If the middle does exist in the ht:
+             * If a middle page does exist in the ht:
              * 
              * 1. Read any accumulated pages from the file or lower VFD to the buffer.
              * 2. Touch the pageheader to update the replacement policy.
-             * 3. Read (copy) the page from the pageheader into the buffer.
+             * 3. Read (copy) the page from the H5FD_pb_pageheader_t into the buffer.
              */
             else {
 
@@ -1219,11 +1224,11 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
                 assert( middle );
                 assert( middle->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-                /* Check the pageheader is not busy or invalid before we flag it busy to use it */
+                /* Make sure H5FD_pb_pageheader_t is not busy or invalid */
                 assert( 0 == ( middle->flags & H5FD_PB_BUSY_FLAG ) );
                 assert( 0 == ( middle->flags & H5FD_PB_INVALID_FLAG ) );
 
-                /* Sets the busy and read flag */
+                /* Sets the busy and read flags */
                 middle->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
 
                 assert( middle->flags & H5FD_PB_BUSY_FLAG );
@@ -1273,16 +1278,16 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
             if ( NULL == ( tail = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, tail_start_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Tail page could not be loaded");
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure H5FD_pb_pageheader_t is not busy or invalid */
             assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
             assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-            /* Sets the pagehader as busy and read */
+            /* Sets the busy and read flags */
             tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
             file_ptr->num_tails++;
         }
         else {
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure H5FD_pb_pageheader_t is not busy or invalid */
             assert( tail );
             assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
             assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
@@ -1327,6 +1332,9 @@ done:
  *              underlying VFD beginning at address ADDR, from buffer BUF 
  *		        according to data transfer properties in DXPL_ID.
  *
+ *              Turns random I/O write requests into paged I/O write 
+ *              requests.
+ * 
  * Return:      SUCCEED/FAIL
  *-------------------------------------------------------------------------
  */
@@ -1344,8 +1352,8 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
     size_t     head_size          = 0;
     haddr_t    middle_start_addr  = HADDR_UNDEF;    
     size_t     middle_size        = 0;
-    uint64_t   middle_page_count  = 0;
-    uint64_t   middle_check_count = 0;           /* used to count and check if pages exist in the ht */
+    uint64_t   middle_page_count  = 0;           
+    uint64_t   middle_check_count = 0;           /* counts and checks if pages exist in the ht */
     haddr_t    tail_start_addr    = HADDR_UNDEF;
     size_t     tail_size          = 0;
     haddr_t    addr_of_remainder;                /* Used to calculate if head, middle, and tails exist */
@@ -1353,7 +1361,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
     haddr_t    expected_addr;
     uint32_t   hash_code;
     size_t     write_count        = 0;           /* total count of all writes */
-    haddr_t    current_addr;                     /* used to track addr for multiple middles */
+    haddr_t    current_addr;                     /* used to track addr for multi-paged middles */
 
     H5FD_pb_pageheader_t *head = NULL;
     H5FD_pb_pageheader_t *tail = NULL;
@@ -1416,7 +1424,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
 
 
-    /***** Checks if a middle or middles exits *****/
+    /***** Checks if a middle exits *****/
 
     if ( ( size_of_remainder > 0 ) && ( ( size_of_remainder / file_ptr->fa.page_size ) > 0 )) {
 
@@ -1453,7 +1461,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
 
 
-    /***** Check the head, middle(s), and tail sizes and starting addrs *****/
+    /***** Check the head, middle, and tail sizes and starting addrs *****/
 
     assert( head_size + middle_size + tail_size == size );
 
@@ -1504,7 +1512,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
             if ( NULL == ( head = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, head_page_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Head page could not be loaded");
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure the H5FD_pb_pageheader_t structure is not busy or invalid */
             assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
             assert( 0 == ( head->flags & H5FD_PB_INVALID_FLAG ) );
 
@@ -1515,7 +1523,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
         }
         else {
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure the H5FD_pb_pageheader_t structure is not busy or invalid */
             assert( head );
             assert( head->magic == H5FD_PB_PAGEHEADER_MAGIC );
             assert( 0 == ( head->flags & H5FD_PB_BUSY_FLAG ) );
@@ -1556,14 +1564,14 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
         current_addr = middle_start_addr;
 
-        /* Iterates through all middles and checks if any exist in the ht */
+        /* Iterates through all pages in the middle */
         for ( middle_check_count = 0; middle_check_count < middle_page_count; middle_check_count++ ) {
 
             hash_code = H5FD__pb_calc_hash_code( file_ptr, current_addr );
 
             middle = H5FD__pb_ht_search_pageheader( file_ptr, current_addr, hash_code );
 
-            /* If it exists in the ht invalidates the ht page*/
+            /* If a middle page exists in the ht invalidate it */
             if ( middle != NULL ) {
 
                 assert( middle );
@@ -1578,7 +1586,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
         }
 
-        /* Writes all middles */
+        /* Writes all middle pages */
         if ( H5FDwrite( file_ptr->file, type, dxpl_id, middle_start_addr, middle_size,
                         (const void *)(((const char *)buf ) + head_size )) < 0 ) {
             HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, \
@@ -1605,24 +1613,24 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
             if ( NULL == ( tail = H5FD__pb_get_pageheader( file_ptr, type, dxpl_id, tail_start_addr, hash_code )) )
                 HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "Tail page could not be loaded");
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure H5FD_pb_pageheader_t is not busy or invalid */
             assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
             assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-            /* Sets the pagehader as busy and write */
+            /* Sets the busy and write flags */
             tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
 
             file_ptr->num_tails++;
         }
         else {
 
-            /* Check the pageheader that it's not busy or invalid before we flag it busy to use it */
+            /* Make sure H5FD_pb_pageheader_t is not busy or invalid */
             assert( tail );
             assert( tail->magic == H5FD_PB_PAGEHEADER_MAGIC );
             assert( 0 == ( tail->flags & H5FD_PB_BUSY_FLAG ) );
             assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-            /* Sets the pagehader as busy and write */
+            /* Sets the busy and write flags */
             tail->flags |= ( H5FD_PB_BUSY_FLAG | H5FD_PB_WRITE_FLAG );
 
             if ( file_ptr->fa.rp == 0 ) {
@@ -1769,7 +1777,8 @@ done:
 /*-------------------------------------------------------------------------
  * Function:    H5FD__pb_open
  *
- * Purpose:     Create and/or opens a file as an HDF5 file.
+ * Purpose:     Create and/or opens a file as an HDF5 file, and initializes
+ *              the data structures for the Page Buffer VFD.
  *
  * Return:      Success:    A pointer to a new file data structure. The
  *                          public fields will be initialized by the
@@ -2934,10 +2943,9 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_alloc_and_init_pageheader
  *
- * Purpose:     Allocates and initializes a pageheader and buffer in the
- *              pageheader for the page.
+ * Purpose:     Allocates and initializes a H5FD_pb_pageheader_t structure.
  *
- * Return:      Success:    A pointer to the page header.
+ * Return:      Success:    A pointer to the H5FD_pb_pageheader_t structure.
  *              Failure:    NULL
  *-----------------------------------------------------------------------------
  */
@@ -2981,11 +2989,12 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_invalidate_pageheader
  *
- * Purpose:     When a page header needs to be marked invalid. The invalid flag
- *              is flipped to signify this page is invalid, and it is removed
- *              from the hash table and replacement policy (rp) list and then
- *              is appended to the tail of the replacement policy list to
- *              ensure invalid pages are evicted ASAP.
+ * Purpose:     When a H5FD_pb_pageheader_t structure needs to be marked 
+ *              invalid. The invalid flag is set to signify that this page is 
+ *              not a valid page, and it is removed from the hash table and 
+ *              replacement policy (rp) list and then appended to the tail of 
+ *              the replacement policy list to ensure invalid pages are the 
+ *              next to be evicted.
  *
  * Return:      SUCCESS/FAIL
  *
@@ -3027,8 +3036,11 @@ H5FD__pb_invalidate_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pagehe
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_flush_page
  *
- * Purpose:     When a page marked dirty is selected to be evicted from the
- *              page buffer, this functions writes the page data to the file.
+ * Purpose:     When a H5FD_pb_pageheader_t with a page flagged as dirty is 
+ *              selected to be evicted from the page buffer by the replacement
+ *              policy, upon the closing of the file, or any other reason a 
+ *              flush needs to occur, this function is called to write the
+ *              the dirty page to the file.
  *
  * Return:      void
  *-----------------------------------------------------------------------------
@@ -3065,13 +3077,14 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_get_pageheader
  *
- * Purpose:     Selects a page header, either by allocating a new one if not at
- *              the maximum number of pages, or if the maximum number of pages
- *              has been reached, by evicting a page from a page header based
- *              on the selected replacement policy.
+ * Purpose:     Selects a H5FD_pb_pageheader_t structure, either by allocating 
+ *              a new one if not at the maximum number of pages, or if the 
+ *              maximum number of pages has been reached, by evicting a page 
+ *              from a H5FD_pb_pageheader_t structure from the replacement
+ *              policy list based on the selected replacement policy.
  *
- * Return:      pointer to the pageheader, or NULL on failure
- *
+ * Return:      Success:    A pointer to the H5FD_pb_pageheader_t structure.
+ *              Failure:    NULL
  *-----------------------------------------------------------------------------
  */
 H5FD_pb_pageheader_t*
@@ -3087,14 +3100,13 @@ H5FD__pb_get_pageheader(H5FD_pb_t *file_ptr, H5FD_mem_t type, hid_t dxpl_id,
     assert( H5FD_PB_MAGIC == file_ptr->magic );
 
 
-    /* If not at maximum pageheaders allocates and initiates a new one */
     if ( file_ptr->rp_pageheader_count < H5FD_PB_DEFAULT_MAX_NUM_PAGES ) {
 
         if ( NULL == (pageheader = H5FD__pb_alloc_and_init_pageheader( file_ptr, addr, hash_code )) )
             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate page");
 
     }
-    /* If at maximum pageheaders, a pageheader is evicted from rp to store the new one */
+
     else {
 
         pageheader = H5FD__pb_rp_evict_pageheader( file_ptr, addr, hash_code );
@@ -3151,15 +3163,16 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_calc_hash_code
  *
- * Purpose:     Generates a hash code for a pageheader based on the page's
- *              addr, to determine which bucket to store the pageheader.
+ * Purpose:     Generates a hash code for a H5FD_pb_pageheader_t structure 
+ *              based on the address (addr) of the page contained within that
+ *              structure, to determine which bucket to store the pageheader.
  *
- *              The hash code is generated by discarding the lower order bits
+ *              The hash code is calculated by discarding the lower order bits
  *              of the addr (which is based on the page size) and right
  *              shifting the remaining bits. This gives us the page number
  *              (this method is more efficient that division). The page number
- *              is then modded by the number of buckets in the hash table to
- *              get the hash code for that page.
+ *              is then taken modulo by the number of buckets in the hash table
+ *              to get the hash code for that page.
  *
  * Return:      uint32_t hash_code
  *
@@ -3197,9 +3210,10 @@ H5FD__pb_calc_hash_code(H5FD_pb_t *file_ptr, haddr_t addr)
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_ht_insert_pageheader
  *
- * Purpose:     Inserts a page header into the hash table (ht) at the bucket 
- *              index that matches the hash code. Currently insert works by 
- *              prepending the page header.
+ * Purpose:     Inserts a H5FD_pb_pageheader_t structure into the hash table 
+ *              (ht) at the bucket index that matches the hash code. Currently 
+ *              this insert function works by prepending the 
+ *              H5FD_pb_pageheader_t structure.
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3256,7 +3270,7 @@ H5FD__pb_ht_insert_pageheader(H5FD_pb_t *file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_ht_remove_pageheader
  *
- * Purpose:     Removes a page header from the hash table (ht).
+ * Purpose:     Removes a H5FD_pb_pageheader_t structure from the hash table
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3311,11 +3325,15 @@ H5FD__pb_ht_remove_pageheader(H5FD_pb_t *file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_ht_search_pageheader
  *
- * Purpose:     Searches the hash table (ht) for a page header based on its
- *              addr and hashcode. If the page header is found, it is
- *              returned, otherwise NULL is returned.
+ * Purpose:     Searches the hash table (ht) for a H5FD_pb_pageheader_t 
+ *              structure based on its address (addr) and hash_code. The 
+ *              hash_code determines which bucket (the index of the hash table)
+ *              to search, and the addr is unique to that page specifying
+ *              exactly which page to search for. If the H5FD_pb_pageheader_t 
+ *              with that hash_code and addr is found, it is returned, 
+ *              otherwise NULL is returned.
  *
- * Return:      Success:    A pointer to the page header.
+ * Return:      Success:    A pointer to the H5FD_pb_pageheader_t structure.
  *              Failure:    NULL
  *-----------------------------------------------------------------------------
  */
@@ -3390,10 +3408,10 @@ H5FD__pb_ht_search_pageheader(H5FD_pb_t *file_ptr, haddr_t addr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_insert_pageheader
  *
- * Purpose:     Inserts a page header into the replacement policy (rp) list 
- *              according the selected rp or other factors (i.e. invalid flag
- *              will cause the pageheader to be inserted to the tail, making it
- *              the next evicted).
+ * Purpose:     Inserts a H5FD_pb_pageheader_t strucutre into the replacement 
+ *              policy (rp) list according to the selected rp or other factors 
+ *              (i.e. invalid flag will cause the H5FD_pb_pageheader_t to be 
+ *              inserted to the tail, making it the next evicted).
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3442,8 +3460,8 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_prepend_pageheader
  *
- * Purpose:     Prepends a page header to the replacement policy (inserts it at
- *              the head of the list to be evicted last).
+ * Purpose:     Prepends a H5FD_pb_pageheader_t structure to the replacement 
+ *              policy (inserts it at the head of the list to be evicted last).
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3489,8 +3507,8 @@ H5FD__pb_rp_prepend_pageheader(H5FD_pb_t *file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_append_pageheader
  *
- * Purpose:     Appends a page header to the replacement policy (inserts it at
- *              the tail of the list to be evicted next).
+ * Purpose:     Appends a H5FD_pb_pageheader_t structure to the replacement 
+ *              policy (inserts it at the tail of the list to be evicted next).
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3533,7 +3551,8 @@ H5FD__pb_rp_append_pageheader(H5FD_pb_t *file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_remove_pageheader
  *
- * Purpose:     Removes a page header from the replacement policy list.
+ * Purpose:     Removes a H5FD_pb_pageheader_t strucutre from the replacement 
+ *              policy list.
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3586,15 +3605,15 @@ H5FD__pb_rp_remove_pageheader(H5FD_pb_t * file_ptr,
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_touch_pageheader
  *
- * Purpose:     Updates a page headers position in the replacement policy (rp), 
- *              depending on the selected rp.
+ * Purpose:     Updates a H5FD_pb_pageheader_t structure's position in the 
+ *              replacement policy (rp), depending on the selected rp.
  * 
  *              Current supported replacement policies:
  *                RP 0 == LRU (least recently used)
  *                RP 1 == FIFO (first in first out)  
  *                
- *              NOTE: FIFO does not call this function because touch is not
- *              needed for FIFO.
+ *              NOTE: FIFO does not call this function because touch doesn't
+ *              affect FIFO order
  *
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
@@ -3633,10 +3652,12 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__pb_rp_evict_pageheader
  *
- * Purpose:     When the maximum number of pageheaders has been reached a 
- *              pageheader is evicted from the replacement policy (rp) list, 
- *              based on the selected replacement policy, to be used to store
- *              a new page.
+ * Purpose:     When the maximum number of pages (and therefore 
+ *              H5FD_pb_pageheader_t structures) has been reached, and a new
+ *              page must be added to the page buffer, the replacement policy
+ *              selects an eviction candidate, if dirty flushes the associated 
+ *              page evicts it, and re-uses the H5FD_pb_pageheader_t 
+ *              structure to store the new page in the page buffer.
  *              
  *              Replacement Policy 0 == LRU (least recently used)
  *              Replacement Policy 1 == FIFO (first in first out)
@@ -3669,7 +3690,7 @@ H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, uint32_t hash_co
         assert( pageheader);
         assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
 
-        /* If busy check the next pageheader in the list */
+        /* If busy check the next H5FD_pb_pageheader_t structure in the list */
         while ( pageheader->flags == H5FD_PB_BUSY_FLAG ) {
 
             pageheader = pageheader->rp_prev_ptr;
@@ -3686,7 +3707,10 @@ H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr, haddr_t addr, uint32_t hash_co
         if ( H5FD__pb_rp_remove_pageheader( file_ptr, pageheader ) != 0 ) 
             HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, NULL, "Pageheader could not be removed from rp");
 
-        /* If the pageheader is flagged as invalid it would have been removed from the ht*/
+        /** 
+         * If the H5FD_pb_pageheader_t structure is valid it must be removed from the hash table.
+         * Otherwise it was removed when it was invalidated.
+         */
         if ( 0 == ( pageheader->flags & H5FD_PB_INVALID_FLAG )) { 
 
             if ( H5FD__pb_ht_remove_pageheader( file_ptr, pageheader ) != 0 )
@@ -3724,11 +3748,12 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FDpb_rp_eviction_check
  *
- * Purpose:     Testing function to return the pageheader being evicted to be 
- *              compared to the pageheader expected to be evicted, ensuring the 
- *              correct pageheader is the one being evicted.
+ * Purpose:     Testing function to return the H5FD_pb_pageheader_t structure 
+ *              being evicted to compared it to the H5FD_pb_pageheader_t
+ *              expected to be evicted, ensuring the correct instance of 
+ *              H5FD_pb_pageheader_t is the one being evicted.
  *
- * Return:      Success:    A pointer to the page header.
+ * Return:      Success:    A pointer to the H5FD_pb_pageheader_t structure.
  * 
  *              Failure:    NULL
  *-----------------------------------------------------------------------------
