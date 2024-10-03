@@ -365,6 +365,7 @@ typedef struct H5FD_pb_t {
     H5FD_pb_pageheader_t     *rp_head_ptr;
     H5FD_pb_pageheader_t     *rp_tail_ptr;
     int64_t                   rp_pageheader_count;
+    int64_t                   rp_dirty_count;
 
 
     /* eoa management fields */
@@ -888,22 +889,6 @@ H5FD__pb_flush(H5FD_t *_file, hid_t H5_ATTR_UNUSED dxpl_id, bool closing)
 
     H5FD_PB_LOG_CALL(__func__);
 
-    /* for future reference:  For santity checking, we should have some 
-     * method of verifying that all dirty pages are flushed.  One way 
-     * of doing this would be to track the number of dirty pages in the 
-     * page buffer, and verify that this number is zero when the flush 
-     * is complete.
-     *
-     * An alternative method would be to scan the hash table and verify
-     * that all entries are clean after the flush.
-     *
-     * Other approaches are possible.
-     *
-     * This should be addressed in the production version.
-     *
-     *                                             JRM -- 9/23/24
-     */
-
     /* flush the page buffer */
 
     pageheader = file_ptr->rp_tail_ptr;
@@ -924,7 +909,11 @@ H5FD__pb_flush(H5FD_t *_file, hid_t H5_ATTR_UNUSED dxpl_id, bool closing)
 
     } /* end while */
 
+    /* Verifies that all pages in the page buffer have been searched */
     assert(pages_visited == file_ptr->rp_pageheader_count);
+
+    /* Verifies that all dirty pages have been flushed */
+    assert(0 == file_ptr->rp_dirty_count);
 
     /* Public API for dxpl "context" */
     if (H5FDflush(file_ptr->file, dxpl_id, closing) < 0)
@@ -1548,7 +1537,11 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
         H5MM_memcpy( head->page + ( head_start_addr - head_page_addr ), buf, head_size );
 
-        head->flags |= H5FD_PB_DIRTY_FLAG;
+        if ( 0 == (head->flags & H5FD_PB_DIRTY_FLAG )) {
+
+            head->flags |= H5FD_PB_DIRTY_FLAG;
+            file_ptr->rp_dirty_count++;
+        }
 
         file_ptr->total_dirty++;
 
@@ -1647,7 +1640,11 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
 
         H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( write_count * file_ptr->fa.page_size )), tail_size );
 
-        tail->flags |= H5FD_PB_DIRTY_FLAG;
+        if ( 0 == (tail->flags & H5FD_PB_DIRTY_FLAG )) {
+
+            tail->flags |= H5FD_PB_DIRTY_FLAG;
+            file_ptr->rp_dirty_count++;
+        }
 
         file_ptr->total_dirty++;
 
@@ -1869,6 +1866,7 @@ H5FD__pb_open(const char *name, unsigned flags, hid_t pb_fapl_id, haddr_t maxadd
     file_ptr->rp_head_ptr           = NULL;
     file_ptr->rp_tail_ptr           = NULL;
     file_ptr->rp_pageheader_count   = 0;
+    file_ptr->rp_dirty_count        = 0;
 
     /* initialize EOA management fields */
     file_ptr->eoa_up                = 0;
@@ -1967,22 +1965,10 @@ H5FD__pb_close(H5FD_t *_file)
     if ( H5FD__pb_flush( _file, H5P_DEFAULT, TRUE) < 0 ) 
         HGOTO_ERROR(H5E_VFL, H5E_CANTFLUSH, FAIL, "unable to flush pagebuffer on close");
 
-#if 0 /* JRM */
-    /* this is another place where it would be convenient to track the number of dirty pages */
-#endif /* JRM */
-    /* verify that the page buffer is in fact clean */
-    pageheader = file_ptr->rp_head_ptr;
 
-    while ( pageheader ) {
+    /* Verify there are no dirty pages in the page buffer */
+    assert( 0 == file_ptr->rp_dirty_count );
 
-        assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
-        assert( 0 == ( pageheader->flags & H5FD_PB_BUSY_FLAG ) );
-
-        if ( pageheader->flags & H5FD_PB_DIRTY_FLAG )
-            HGOTO_ERROR(H5E_VFL, H5E_CANTCLOSEFILE, FAIL, "Page buffer contains one or more dirty pages");
-
-        pageheader = pageheader->rp_next_ptr;
-    }
 
     /* close the underlying VFD */
     if ( H5I_dec_ref( file_ptr->fa.fapl_id ) < 0 )
@@ -3013,7 +2999,13 @@ H5FD__pb_invalidate_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pagehe
     assert( H5FD_PB_PAGEHEADER_MAGIC == pageheader->magic );
 
     pageheader->flags |= H5FD_PB_INVALID_FLAG;
-    pageheader->flags &= ~H5FD_PB_DIRTY_FLAG;
+    
+    if ( pageheader->flags & H5FD_PB_DIRTY_FLAG ) {
+
+        pageheader->flags &= ~H5FD_PB_DIRTY_FLAG;
+        file_ptr->rp_dirty_count--;
+    }
+    
 
     assert( 0 == ( pageheader->flags & H5FD_PB_BUSY_FLAG ));
     assert( 0 == ( pageheader->flags & H5FD_PB_DIRTY_FLAG ));
@@ -3063,6 +3055,7 @@ H5FD__pb_flush_page(H5FD_pb_t * file_ptr, hid_t dxpl_id, H5FD_pb_pageheader_t *p
 
     pageheader->flags &= ~H5FD_PB_DIRTY_FLAG;
 
+    file_ptr->rp_dirty_count--;
     file_ptr->total_flushed++;
 
     assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
