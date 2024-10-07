@@ -99,6 +99,14 @@ set (H5C_HDRS
 IDE_GENERATED_PROPERTIES ("H5C" "${H5C_HDRS}" "${H5C_SOURCES}" )
 
 
+set (H5CS_SOURCES
+    ${HDF5_SRC_DIR}/H5CS.c
+)
+set (H5CS_HDRS
+)
+IDE_GENERATED_PROPERTIES ("H5CS" "${H5CS_HDRS}" "${H5CS_SOURCES}" )
+
+
 set (H5CX_SOURCES
     ${HDF5_SRC_DIR}/H5CX.c
 )
@@ -249,7 +257,6 @@ set (H5FD_SOURCES
     ${HDF5_SRC_DIR}/H5FDstdio.c
     ${HDF5_SRC_DIR}/H5FDtest.c
     ${HDF5_SRC_DIR}/H5FDwindows.c
-
     ${HDF5_SRC_DIR}/H5FDpb.c
     ${HDF5_SRC_DIR}/vfd.c
 )
@@ -275,8 +282,9 @@ set (H5FD_HDRS
     ${HDF5_SRC_DIR}/H5FDwindows.h
 )
 
-# Append Subfiling VFD sources to H5FD interface if it is built.
-# Append Subfiling VFD public headers to H5FD_HDRS regardless.
+# Append Subfiling VFD and Mercury sources to H5FD
+# interface if Subfiling VFD is built. Append Subfiling
+# VFD public headers to H5FD_HDRS regardless.
 add_subdirectory (${H5FD_SUBFILING_DIR})
 
 IDE_GENERATED_PROPERTIES ("H5FD" "${H5FD_HDRS}" "${H5FD_SOURCES}" )
@@ -604,15 +612,6 @@ set (H5T_SOURCES
     ${HDF5_SRC_DIR}/H5Tcommit.c
     ${HDF5_SRC_DIR}/H5Tcompound.c
     ${HDF5_SRC_DIR}/H5Tconv.c
-    ${HDF5_SRC_DIR}/H5Tconv_integer.c
-    ${HDF5_SRC_DIR}/H5Tconv_float.c
-    ${HDF5_SRC_DIR}/H5Tconv_string.c
-    ${HDF5_SRC_DIR}/H5Tconv_bitfield.c
-    ${HDF5_SRC_DIR}/H5Tconv_compound.c
-    ${HDF5_SRC_DIR}/H5Tconv_reference.c
-    ${HDF5_SRC_DIR}/H5Tconv_enum.c
-    ${HDF5_SRC_DIR}/H5Tconv_vlen.c
-    ${HDF5_SRC_DIR}/H5Tconv_array.c
     ${HDF5_SRC_DIR}/H5Tcset.c
     ${HDF5_SRC_DIR}/H5Tdbg.c
     ${HDF5_SRC_DIR}/H5Tdeprec.c
@@ -643,21 +642,6 @@ IDE_GENERATED_PROPERTIES ("H5T" "${H5T_HDRS}" "${H5T_SOURCES}" )
 
 set (H5TS_SOURCES
     ${HDF5_SRC_DIR}/H5TS.c
-    ${HDF5_SRC_DIR}/H5TSatomic.c
-    ${HDF5_SRC_DIR}/H5TSbarrier.c
-    ${HDF5_SRC_DIR}/H5TSc11.c
-    ${HDF5_SRC_DIR}/H5TScond.c
-    ${HDF5_SRC_DIR}/H5TSint.c
-    ${HDF5_SRC_DIR}/H5TSkey.c
-    ${HDF5_SRC_DIR}/H5TSmutex.c
-    ${HDF5_SRC_DIR}/H5TSonce.c
-    ${HDF5_SRC_DIR}/H5TSpool.c
-    ${HDF5_SRC_DIR}/H5TSpthread.c
-    ${HDF5_SRC_DIR}/H5TSrec_rwlock.c
-    ${HDF5_SRC_DIR}/H5TSrwlock.c
-    ${HDF5_SRC_DIR}/H5TSsemaphore.c
-    ${HDF5_SRC_DIR}/H5TSthread.c
-    ${HDF5_SRC_DIR}/H5TSwin.c
 )
 set (H5TS_HDRS
     ${HDF5_SRC_DIR}/H5TSdevelop.h
@@ -775,7 +759,6 @@ set (H5_MODULE_HEADERS
     ${HDF5_SRC_DIR}/H5SLmodule.h
     ${HDF5_SRC_DIR}/H5SMmodule.h
     ${HDF5_SRC_DIR}/H5Tmodule.h
-    ${HDF5_SRC_DIR}/H5TSmodule.h
     ${HDF5_SRC_DIR}/H5VLmodule.h
     ${HDF5_SRC_DIR}/H5Zmodule.h
 )
@@ -787,6 +770,7 @@ set (common_SRCS
     ${H5B_SOURCES}
     ${H5B2_SOURCES}
     ${H5C_SOURCES}
+    ${H5CS_SOURCES}
     ${H5CX_SOURCES}
     ${H5D_SOURCES}
     ${H5E_SOURCES}
@@ -881,6 +865,8 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5Cpkg.h
     ${HDF5_SRC_DIR}/H5Cprivate.h
 
+    ${HDF5_SRC_DIR}/H5CSprivate.h
+
     ${HDF5_SRC_DIR}/H5CXprivate.h
 
     ${HDF5_SRC_DIR}/H5Dpkg.h
@@ -888,8 +874,6 @@ set (H5_PRIVATE_HEADERS
 
     ${HDF5_SRC_DIR}/H5Edefin.h
     ${HDF5_SRC_DIR}/H5Einit.h
-    ${HDF5_SRC_DIR}/H5Emajdef.h
-    ${HDF5_SRC_DIR}/H5Emindef.h
     ${HDF5_SRC_DIR}/H5Epkg.h
     ${HDF5_SRC_DIR}/H5Eprivate.h
     ${HDF5_SRC_DIR}/H5Eterm.h
@@ -913,10 +897,6 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5FDonion_priv.h
     ${HDF5_SRC_DIR}/H5FDpkg.h
     ${HDF5_SRC_DIR}/H5FDprivate.h
-
-    ${HDF5_SRC_DIR}/H5FDpb.h
-    ${HDF5_SRC_DIR}/H5FDcrypt.h
-
 
     ${HDF5_SRC_DIR}/H5FLprivate.h
 
@@ -977,21 +957,9 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5SMpkg.h
     ${HDF5_SRC_DIR}/H5SMprivate.h
 
-    ${HDF5_SRC_DIR}/H5Tconv.h
-    ${HDF5_SRC_DIR}/H5Tconv_array.h
-    ${HDF5_SRC_DIR}/H5Tconv_bitfield.h
-    ${HDF5_SRC_DIR}/H5Tconv_compound.h
-    ${HDF5_SRC_DIR}/H5Tconv_enum.h
-    ${HDF5_SRC_DIR}/H5Tconv_float.h
-    ${HDF5_SRC_DIR}/H5Tconv_integer.h
-    ${HDF5_SRC_DIR}/H5Tconv_macros.h
-    ${HDF5_SRC_DIR}/H5Tconv_reference.h
-    ${HDF5_SRC_DIR}/H5Tconv_string.h
-    ${HDF5_SRC_DIR}/H5Tconv_vlen.h
     ${HDF5_SRC_DIR}/H5Tpkg.h
     ${HDF5_SRC_DIR}/H5Tprivate.h
 
-    ${HDF5_SRC_DIR}/H5TSpkg.h
     ${HDF5_SRC_DIR}/H5TSprivate.h
 
     ${HDF5_SRC_DIR}/H5UCprivate.h
@@ -1010,6 +978,9 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5win32defs.h
 
     ${HDF5_SRC_DIR}/uthash.h
+
+    ${HDF5_SRC_DIR}/H5FDpb.h
+    ${HDF5_SRC_DIR}/H5FDcrypt.h
 )
 
 set (H5_GENERATED_HEADERS
@@ -1027,7 +998,7 @@ set (H5_PUBLIC_GENERATED_HEADERS
     ${HDF5_SRC_DIR}/H5overflow.h
 )
 
-option (HDF5_GENERATE_HEADERS "Rebuild Generated Files" ON)
+option (HDF5_GENERATE_HEADERS "Rebuild Generated Files" OFF)
 if (HDF5_GENERATE_HEADERS)
   set_source_files_properties(${H5_GENERATED_HEADERS} PROPERTIES GENERATED TRUE)
   if (H5_PERL_FOUND)
@@ -1092,13 +1063,14 @@ endif ()
 if (BUILD_STATIC_LIBS)
   add_library (${HDF5_LIB_TARGET} STATIC ${common_SRCS} H5build_settings.c ${H5_PUBLIC_HEADERS} ${H5_PRIVATE_HEADERS} ${H5_GENERATED_HEADERS} ${H5_MODULE_HEADERS})
   target_include_directories (${HDF5_LIB_TARGET}
-      PRIVATE "${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR};${HDF5_COMP_INCLUDE_DIRECTORIES};$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:${MPI_C_INCLUDE_DIRS}>"
+      PRIVATE "${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR};$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:${MPI_C_INCLUDE_DIRS}>"
       INTERFACE "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/include>;$<BUILD_INTERFACE:${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR}>"
   )
   target_compile_options(${HDF5_LIB_TARGET} PRIVATE "${HDF5_CMAKE_C_FLAGS}")
   target_compile_definitions(${HDF5_LIB_TARGET}
       PUBLIC
           ${HDF_EXTRA_C_FLAGS}
+          ${HDF_EXTRA_FLAGS}
       PRIVATE
           "$<$<BOOL:${HDF5_ENABLE_TRACE}>:H5_DEBUG_API>" # Enable tracing of the API
           "$<$<BOOL:${HDF5_ENABLE_DEBUG_APIS}>:${HDF5_DEBUG_APIS}>"
@@ -1107,11 +1079,11 @@ if (BUILD_STATIC_LIBS)
   TARGET_C_PROPERTIES (${HDF5_LIB_TARGET} STATIC)
   target_link_libraries (${HDF5_LIB_TARGET}
       PRIVATE ${LINK_LIBS} ${LINK_COMP_LIBS}
-      PUBLIC "$<$<PLATFORM_ID:Windows>:${LINK_PUB_LIBS}>" "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>" "$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:MPI::MPI_C>"
+      PUBLIC "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>" "$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:MPI::MPI_C>"
   )
   if (NOT WIN32)
     target_link_libraries (${HDF5_LIB_TARGET}
-      PRIVATE "$<$<OR:$<BOOL:${HDF5_ENABLE_THREADS}>,$<BOOL:${HDF5_ENABLE_SUBFILING_VFD}>>:Threads::Threads>"
+      PRIVATE "$<$<OR:$<BOOL:${HDF5_ENABLE_THREADSAFE}>,$<BOOL:${HDF5_ENABLE_SUBFILING_VFD}>>:Threads::Threads>"
     )
   endif ()
   set_global_variable (HDF5_LIBRARIES_TO_EXPORT ${HDF5_LIB_TARGET})
@@ -1124,7 +1096,7 @@ endif ()
 if (BUILD_SHARED_LIBS)
   add_library (${HDF5_LIBSH_TARGET} SHARED ${common_SRCS} H5build_settings.c ${H5_PUBLIC_HEADERS} ${H5_PRIVATE_HEADERS} ${H5_GENERATED_HEADERS} ${H5_MODULE_HEADERS})
   target_include_directories (${HDF5_LIBSH_TARGET}
-      PRIVATE "${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR};${HDF5_COMP_INCLUDE_DIRECTORIES};$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:${MPI_C_INCLUDE_DIRS}>"
+      PRIVATE "${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR};$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:${MPI_C_INCLUDE_DIRS}>"
       PUBLIC "$<$<BOOL:${HDF5_ENABLE_HDFS}>:${HDFS_INCLUDE_DIR}>"
       INTERFACE "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/include>;$<BUILD_INTERFACE:${HDF5_SRC_INCLUDE_DIRS};${HDF5_SRC_BINARY_DIR}>"
   )
@@ -1133,8 +1105,8 @@ if (BUILD_SHARED_LIBS)
       PUBLIC
           "H5_BUILT_AS_DYNAMIC_LIB"
           ${HDF_EXTRA_C_FLAGS}
+          ${HDF_EXTRA_FLAGS}
       PRIVATE
-          "$<$<BOOL:${HDF5_ENABLE_THREADS}>:H5_HAVE_THREADS>"
           "$<$<BOOL:${HDF5_ENABLE_THREADSAFE}>:H5_HAVE_THREADSAFE>"
           "$<$<BOOL:${HDF5_ENABLE_TRACE}>:H5_DEBUG_API>"  # Enable tracing of the API
           "$<$<BOOL:${HDF5_ENABLE_DEBUG_APIS}>:${HDF5_DEBUG_APIS}>"
@@ -1143,7 +1115,8 @@ if (BUILD_SHARED_LIBS)
   TARGET_C_PROPERTIES (${HDF5_LIBSH_TARGET} SHARED)
   target_link_libraries (${HDF5_LIBSH_TARGET}
       PRIVATE ${LINK_LIBS} ${LINK_COMP_LIBS}
-      PUBLIC "$<$<PLATFORM_ID:Windows>:${LINK_PUB_LIBS}>" "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>" "$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:MPI::MPI_C>" "$<$<OR:$<BOOL:${HDF5_ENABLE_THREADS}>,$<BOOL:${HDF5_ENABLE_SUBFILING_VFD}>>:Threads::Threads>"
+              "$<$<OR:$<BOOL:${HDF5_ENABLE_THREADSAFE}>,$<BOOL:${HDF5_ENABLE_SUBFILING_VFD}>>:Threads::Threads>"
+      PUBLIC "$<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_DL_LIBS}>" "$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:MPI::MPI_C>"
   )
   set_global_variable (HDF5_LIBRARIES_TO_EXPORT "${HDF5_LIBRARIES_TO_EXPORT};${HDF5_LIBSH_TARGET}")
   H5_SET_LIB_OPTIONS (${HDF5_LIBSH_TARGET} ${HDF5_LIB_NAME} SHARED "LIB")
@@ -1210,28 +1183,27 @@ set (_PKG_CONFIG_PREFIX ${CMAKE_INSTALL_PREFIX})
 set (_PKG_CONFIG_EXEC_PREFIX \${prefix})
 set (_PKG_CONFIG_LIBDIR \${exec_prefix}/${HDF5_INSTALL_LIB_DIR})
 set (_PKG_CONFIG_INCLUDEDIR \${prefix}/${HDF5_INSTALL_INCLUDE_DIR})
-set (_PKG_CONFIG_LIBNAME "${HDF5_LIB_NAME}")
+set (_PKG_CONFIG_LIBNAME "${HDF5_LIB_CORENAME}")
 set (_PKG_CONFIG_VERSION "${HDF5_PACKAGE_VERSION}")
-set (PKGCONFIG_LIBNAME "${HDF5_LIB_NAME}")
+set (PKGCONFIG_LIBNAME "${HDF5_LIB_CORENAME}")
 if (${HDF_CFG_NAME} MATCHES "Debug" OR ${HDF_CFG_NAME} MATCHES "Developer")
   set (PKGCONFIG_LIBNAME "${PKGCONFIG_LIBNAME}${CMAKE_DEBUG_POSTFIX}")
 endif ()
 
-#foreach (libs ${LINK_LIBS})
-#  set (_PKG_CONFIG_LIBS_PRIVATE "${_PKG_CONFIG_LIBS_PRIVATE} -l${libs}")
-#endforeach ()
+foreach (libs ${LINK_LIBS})
+  set (_PKG_CONFIG_LIBS_PRIVATE "${_PKG_CONFIG_LIBS_PRIVATE} -l${libs}")
+endforeach ()
 
 # The settings for the compression libs depends on if they have pkconfig support
 # Assuming they don't
 foreach (libs ${LINK_COMP_LIBS})
 #  set (_PKG_CONFIG_REQUIRES_PRIVATE "${_PKG_CONFIG_REQUIRES_PRIVATE} -l${libs}")
-  get_target_property (libname ${libs} OUTPUT_NAME)
-  set (_PKG_CONFIG_LIBS_PRIVATE "${_PKG_CONFIG_LIBS_PRIVATE} -l${libname}")
+  set (_PKG_CONFIG_LIBS_PRIVATE "${_PKG_CONFIG_LIBS_PRIVATE} -l${libs}")
 endforeach ()
 
-#if (BUILD_STATIC_LIBS)
-#  set (_PKG_CONFIG_LIBS "${_PKG_CONFIG_LIBS} -l${PKGCONFIG_LIBNAME}")
-#endif ()
+if (BUILD_STATIC_LIBS)
+  set (_PKG_CONFIG_LIBS "${_PKG_CONFIG_LIBS} -l${PKGCONFIG_LIBNAME}")
+endif ()
 if (BUILD_SHARED_LIBS)
   set (_PKG_CONFIG_SH_LIBS "${_PKG_CONFIG_SH_LIBS} -l${PKGCONFIG_LIBNAME}")
 endif ()
