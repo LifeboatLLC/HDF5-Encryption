@@ -826,7 +826,6 @@ H5FD__crypt_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     H5P_genplist_t * plist_ptr = NULL;
     haddr_t          ciphertext_addr;  /* addr converted for ciphertext size */
     haddr_t          ct_addr;          /* current addr of the read */
-    size_t           ciphertext_size;  /* size converted for ciphertext size */
     size_t           ct_size;          /* size currently in ciphertext buf */
     uint64_t         pages_remaining;  /* number of pages remaining */
     /* number of pages remaining in ciphertext buf */
@@ -834,6 +833,10 @@ H5FD__crypt_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     unsigned char *  pt_ptr = NULL;    /* ptr to plaintext buffer */
     unsigned char *  ct_ptr = NULL;    /* ptr to ciphertext buffer */
     herr_t           ret_value = SUCCEED; /* Return value */
+
+#ifdef DEBUG
+    size_t           ciphertext_size;  /* size converted for ciphertext size */
+#endif
 
     FUNC_ENTER_PACKAGE
 
@@ -875,9 +878,11 @@ H5FD__crypt_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
                       ((haddr_t)(file_ptr->fa.ciphertext_page_size)) +
                       file_ptr->ciphertext_offset;
 
+#ifdef DEBUG
     /* compute the cipher text size from the plain text sizc. */
     ciphertext_size = (size / file_ptr->fa.plaintext_page_size) * 
                                         file_ptr->fa.ciphertext_page_size;
+#endif
 
     /* Read the cipher text, decrypt it, and copy the plaintext into the 
      * provided buffer. Since the ciphertext may be larger than the ciphertext 
@@ -946,8 +951,10 @@ H5FD__crypt_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
 
     } /* while */
 
+#ifdef DEBUG
     /* verify that we read the correct amount of ciphertext */
     assert( (size_t)(ct_addr - ciphertext_addr) == ciphertext_size );
+#endif
 
 done:
 
@@ -979,7 +986,6 @@ H5FD__crypt_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
     H5P_genplist_t * plist_ptr = NULL;
     haddr_t          ciphertext_addr;  /* addr converted for ciphertext size */
     haddr_t          ct_addr;          /* current addr of the read */
-    size_t           ciphertext_size;  /* size converted for ciphertext size */
     size_t           ct_size;          /* size currently in ciphertext buf */
     uint64_t         pages_remaining;  /* number of pages remaining */
     /* number of pages remaining in ciphertext buf */
@@ -988,6 +994,9 @@ H5FD__crypt_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
     unsigned char *  ct_ptr = NULL;    /* ptr to ciphertext buffer */
     herr_t           ret_value = SUCCEED; /* Return value */
 
+#ifdef DEBUG
+    size_t           ciphertext_size;  /* size converted for ciphertext size */
+#endif
     FUNC_ENTER_PACKAGE
 
     H5FD_CRYPT_LOG_CALL(__func__);
@@ -1019,9 +1028,11 @@ H5FD__crypt_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
                       ((haddr_t)(file_ptr->fa.ciphertext_page_size)) + 
                       file_ptr->ciphertext_offset;
 
+#ifdef DEBUG
     /* Compute the cipher text size from the plain text size. */
     ciphertext_size = (size / file_ptr->fa.plaintext_page_size) * 
                         file_ptr->fa.ciphertext_page_size;
+#endif
 
     /* encrypt the plaintext and write it to the underlying file.  Since the 
      * plaintext may be larger than the ciphertext buffer, must allow for 
@@ -1078,7 +1089,9 @@ H5FD__crypt_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
         } 
     } /* while */
 
+#ifdef DEBUG
     assert( (size_t)(ct_addr - ciphertext_addr) == ciphertext_size );
+#endif
 
 done:
 
