@@ -257,6 +257,8 @@ set (H5FD_SOURCES
     ${HDF5_SRC_DIR}/H5FDstdio.c
     ${HDF5_SRC_DIR}/H5FDtest.c
     ${HDF5_SRC_DIR}/H5FDwindows.c
+    ${HDF5_SRC_DIR}/H5FDpb.c
+    ${HDF5_SRC_DIR}/vfd.c
 )
 
 set (H5FD_HDRS
@@ -976,6 +978,9 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5win32defs.h
 
     ${HDF5_SRC_DIR}/uthash.h
+
+    ${HDF5_SRC_DIR}/H5FDpb.h
+    ${HDF5_SRC_DIR}/H5FDcrypt.h
 )
 
 set (H5_GENERATED_HEADERS
