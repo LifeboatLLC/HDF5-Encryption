@@ -1,5 +1,7 @@
 # HDF5-Encryption
-This repo holds HDF5 Encryption VFD prototype amd documentation.
+Copyrigth by Lifeboat, LLC https://www.lifeboat.llc
+
+This repo holds HDF5 Encryption VFD prototype and documentation.
 
 Below are instructions how to build in "place" the version of HDF5 with encryption enables. Please notice that currently key and magic nuber are hard coded.
 
