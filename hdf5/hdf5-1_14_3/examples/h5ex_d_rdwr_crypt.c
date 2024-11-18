@@ -60,6 +60,7 @@ main(void)
          crypt_fapl_id = H5Pcreate(H5P_FILE_ACCESS);
          H5Pset_fapl_crypt(crypt_fapl_id, &crypt_vfd_config);
          pb_vfd_config.fapl_id = crypt_fapl_id;
+  
          fapl_id = H5Pcreate(H5P_FILE_ACCESS);
          H5Pset_fapl_pb(fapl_id, &pb_vfd_config);
    
@@ -72,7 +73,7 @@ main(void)
             wdata[i][j] = i * j - j;
 
     /*
-     * Create a new file using the default properties.
+     * Create a new file using the access properties set above.
      */
     file = H5Fcreate(FILE, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
 
@@ -105,7 +106,7 @@ main(void)
      */
 
     /*
-     * Open file and dataset using the default properties.
+     * Open file and dataset using the access properties set above.
      */
     file = H5Fopen(FILE, H5F_ACC_RDONLY, fapl_id);
     dset = H5Dopen(file, DATASET, H5P_DEFAULT);
