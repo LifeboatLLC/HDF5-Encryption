@@ -258,7 +258,7 @@ set (H5FD_SOURCES
     ${HDF5_SRC_DIR}/H5FDtest.c
     ${HDF5_SRC_DIR}/H5FDwindows.c
     ${HDF5_SRC_DIR}/H5FDpb.c
-    ${HDF5_SRC_DIR}/vfd.c
+    ${HDF5_SRC_DIR}/H5FDcrypt.c
 )
 
 set (H5FD_HDRS
@@ -280,6 +280,8 @@ set (H5FD_HDRS
     ${HDF5_SRC_DIR}/H5FDsplitter.h
     ${HDF5_SRC_DIR}/H5FDstdio.h
     ${HDF5_SRC_DIR}/H5FDwindows.h
+    ${HDF5_SRC_DIR}/H5FDpb.h
+    ${HDF5_SRC_DIR}/H5FDcrypt.h
 )
 
 # Append Subfiling VFD and Mercury sources to H5FD
@@ -978,9 +980,6 @@ set (H5_PRIVATE_HEADERS
     ${HDF5_SRC_DIR}/H5win32defs.h
 
     ${HDF5_SRC_DIR}/uthash.h
-
-    ${HDF5_SRC_DIR}/H5FDpb.h
-    ${HDF5_SRC_DIR}/H5FDcrypt.h
 )
 
 set (H5_GENERATED_HEADERS
