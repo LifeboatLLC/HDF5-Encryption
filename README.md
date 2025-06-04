@@ -36,7 +36,7 @@ See `hdf5/share/hdf5_examples/c/h5ex_d_rdwr_crypt.c` for how to use new APIs to 
   
   `make install`
 
-  Library willbe installed in the `hdf5` subdirectory
+  Library will be installed in the `hdf5` subdirectory
 
  * Change directory to the installed examples and compile and run `h5ex_d_rdwr_crypt.c` to create the `h5ex_d_rdwr_crypt.h5` file.
    
