@@ -59,7 +59,7 @@ See `hdf5/share/hdf5_examples/c/h5ex_d_rdwr_crypt.c` for how to use new APIs to 
 
   * Check that `h5ex_d_rdwr.h5` is cleartext now.
     
-  * Try `h5dump` on both files. The tool is smart enough to dump both ciphertext and cleartext files without specifyng the required driver driver.
+  * Try `h5dump` on both files. The tool is smart enough to dump both ciphertext and cleartext files without specifyng the required I/O driver.
 
   * Repack clear text file into encrypted file
 
