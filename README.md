@@ -2,6 +2,7 @@
 Copyrigth by Lifeboat, LLC https://www.lifeboat.llc
 
 This repo holds HDF5 Encryption VFD prototype and documentation. **The code can be used for testing purposes only.**
+Current implementation supports AES and Twofish symmetrical-key encryption from the GNU gcrypt library.
 
 Below are instructions how to build in "place" the version of HDF5 with encryption enables. Please notice that currently key and magic number are hard coded for tools to work and for tests to pass. 
 
