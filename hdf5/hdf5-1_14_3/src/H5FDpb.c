@@ -1291,7 +1291,7 @@ H5FD__pb_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type, hid_t H5_ATTR_UNUSE
         assert( tail->flags & H5FD_PB_READ_FLAG );
         assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-        H5MM_memcpy( (void *)(((char *)buf ) + head_size + ( read_count * file_ptr->fa.page_size )), 
+        H5MM_memcpy( (void *)(((char *)buf ) + head_size + ( middle_page_count * file_ptr->fa.page_size )), 
                      tail->page, tail_size );
 
         tail->flags &= ~( H5FD_PB_BUSY_FLAG | H5FD_PB_READ_FLAG );
@@ -1632,7 +1632,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
         assert( tail->flags & H5FD_PB_WRITE_FLAG );
         assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-        H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( write_count * file_ptr->fa.page_size )), tail_size );
+        H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( middle_page_count * file_ptr->fa.page_size )), tail_size );
 
         if ( 0 == (tail->flags & H5FD_PB_DIRTY_FLAG )) {
 
