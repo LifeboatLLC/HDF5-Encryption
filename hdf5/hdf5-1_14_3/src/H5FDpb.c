@@ -1632,7 +1632,7 @@ H5FD__pb_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size
         assert( tail->flags & H5FD_PB_WRITE_FLAG );
         assert( 0 == ( tail->flags & H5FD_PB_INVALID_FLAG ) );
 
-        H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( middle_page_count * file_ptr->fa.page_size )), tail_size );
+        H5MM_memcpy( tail->page, (const void *)(((const char *)buf ) + ( head_size + middle_size )), tail_size );
 
         if ( 0 == (tail->flags & H5FD_PB_DIRTY_FLAG )) {
 
@@ -3777,6 +3777,3 @@ H5FD__pb_rp_eviction_check(H5FD_t *_file, haddr_t *current_rp_addrs)
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FDpb_rp_eviction_check() */
-
-
-

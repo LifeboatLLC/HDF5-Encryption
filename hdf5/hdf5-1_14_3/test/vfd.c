@@ -5218,10 +5218,11 @@ pb_test_page_combinations(void)
         write_buf[i] = (unsigned char)rand() % 256;
 
 
-
     /*************************/
     /***** HEAD AND TAIL *****/
     /*************************/
+
+    assert( vfd_config.page_size < buf_size );
 
     /****** Read test *****/
 
@@ -5230,13 +5231,26 @@ pb_test_page_combinations(void)
 
     /****** Write test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, vfd_config.page_size, write_buf) < 0) 
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2000, vfd_config.page_size, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
+
+    /***** validate write *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2000, vfd_config.page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    for ( i = 0; i < vfd_config.page_size; i++ ) {
+
+        if ( read_buf[i] != write_buf[i] )
+            PB_TEST_FAULT("write validation failed\n");
+    }
 
 
     /***************************/
     /***** HEAD AND MIDDLE *****/
     /***************************/
+
+    assert( 6144 < buf_size );
 
     /****** Read test *****/
 
@@ -5248,10 +5262,23 @@ pb_test_page_combinations(void)
     if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 18432, 6144, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /***** validate write *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 18432, 6144, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    for ( i = 0; i < 6144; i++ ) {
+
+        if ( read_buf[i] != write_buf[i] )
+            PB_TEST_FAULT("write validation failed\n");
+    }
+
 
     /***************************/
     /***** MIDDLE AND TAIL *****/
     /***************************/
+
+    assert( 6144 < buf_size );
 
     /****** Read test *****/
 
@@ -5260,13 +5287,26 @@ pb_test_page_combinations(void)
 
     /****** Write test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24576, 6144, write_buf) < 0) 
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24500, 6144, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
+
+    /***** validate write *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24500, 6144, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    for ( i = 0; i < 6144; i++ ) {
+
+        if ( read_buf[i] != write_buf[i] )
+            PB_TEST_FAULT("write validation failed\n");
+    }
 
 
     /**********************************/
     /***** HEAD, MIDDLE, AND TAIL *****/
     /**********************************/
+
+    assert( (vfd_config.page_size * 2) < buf_size );
 
     /****** Read test *****/
 
@@ -5278,11 +5318,23 @@ pb_test_page_combinations(void)
     if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 47108, vfd_config.page_size * 2, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /***** validate write *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 47108, vfd_config.page_size * 2, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    for ( i = 0; i < vfd_config.page_size * 2; i++ ) {
+
+        if ( read_buf[i] != write_buf[i] )
+            PB_TEST_FAULT("write validation failed\n");
+    }
+
 
     /********************************************/
     /***** HEAD, MULTIPLE MIDDLES, AND TAIL *****/
     /********************************************/
 
+    assert( (vfd_config.page_size * 5) < buf_size );
 
     /****** Read test *****/
 
@@ -5294,7 +5346,16 @@ pb_test_page_combinations(void)
     if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 79872, vfd_config.page_size * 5, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /***** validate write *****/
 
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 79872, vfd_config.page_size * 5, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    for ( i = 0; i < vfd_config.page_size * 5; i++ ) {
+
+        if ( read_buf[i] != write_buf[i] )
+            PB_TEST_FAULT("write validation failed\n");
+    }
 
 
     /***** End Tests *****/   
