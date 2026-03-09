@@ -27,8 +27,11 @@
 /* Headers */
 /***********/
 #include "H5private.h"   /* Generic Functions                        */
-#include "H5CLpkg.h"   /* VFD Configuration language               */
+#include "H5Iprivate.h"  /* IDs                                      */
+#include "H5CLpkg.h"     /* VFD Configuration language               */
+#include "H5Pprivate.h"  /* Property lists                           */
 #include "H5Eprivate.h"  /* Error handling                           */
+#include "H5FDprivate.h" /* VFDs                                     */
 
 
 /****************/
@@ -62,6 +65,282 @@
 
 /*******************************************************************************
  *
+ * Function:    H5CL_load_vfd_config_str_into_fapl
+ *
+ * Purpose:     Given a vfd configuration string, and possibly a fapl_id, 
+ *              
+ *              1) parse the top level of the input string to determine 
+ *                 the name of the target vfd.
+ *
+ *              2) Verify that the vfd name is valid
+ *
+ *              3) Load the vfd name and associated configuration string into 
+ *                 the supplied fapl.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Return:      Success:        non-negative
+ *              Failure:        negative
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+herr_t
+H5CL_load_vfd_config_str_into_fapl(hid_t fapl_id, char * vfd_config_str_ptr)
+{
+    char * vfd_name = NULL;
+    bool vfd_ref_inc = false;
+    H5P_genplist_t *plist;               /* Property list pointer */
+    htri_t vfd_is_registered;
+    hid_t  vfd_id = H5I_INVALID_HID; 
+    H5CL_nv_pair_t top_pair;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL, 
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    }; 
+    herr_t ret_value = SUCCEED; /* Return value */
+
+    FUNC_ENTER_NOAPI(FAIL)
+
+    assert( vfd_config_str_ptr );
+   
+
+    top_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&top_pair) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize top_pair.");
+
+    /* setup lex_vars for the parsing the expected top level name value pair */
+    if ( H5CL__init_lex_vars(vfd_config_str_ptr, &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize lex_vars.");
+
+    /* parse the top level name value pair */
+    if ( H5CL__parse_name_value_pair(&top_pair, &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't parse top level name val pair.");
+
+    /* verify that the value of the top level name value pair is a name value pair list */
+    if ( top_pair.val_type != H5CL_VAL_LIST )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "value of top level name value pair is not a list.");
+
+    /* top_pair.name will be discarded when we call H5CL_take_down_nv_pair().  Thus delay 
+     * this call until closing so as to avoid deleting the string out from under us..
+     */
+    vfd_name = top_pair.name_ptr;
+
+    assert(vfd_name);
+
+    /* now look up the ID associated with the VFD name, registering it in passing 
+     * if appropriate.  Note that this section of the function is adapted from 
+     * H5P__facc_set_def_driver() in H5Pfapl.c
+     */
+    if ( (vfd_is_registered = H5FD_is_driver_registered_by_name(vfd_name, &vfd_id)) < 0)
+        HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't check if vfd is already registered");
+
+    if ( vfd_is_registered ) {
+
+        assert( vfd_id >= 0 );
+
+        if (H5I_inc_ref(vfd_id, true) < 0)
+            HGOTO_ERROR(H5E_VFL, H5E_CANTINC, FAIL, "unable to increment ref count on VFD");
+
+        vfd_ref_inc = true;
+
+    } else {
+
+        /* Check for VFDs that ship with the library */
+
+        if ( H5P_facc_set_def_driver_check_predefined(vfd_name, &vfd_id) < 0 ) {
+
+            HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't check for predefined VFL driver name");
+
+        } else if (vfd_id > 0) {
+
+            if (H5I_inc_ref(vfd_id, true) < 0)
+                HGOTO_ERROR(H5E_VFL, H5E_CANTINC, FAIL, "can't increment VFL driver refcount");
+
+            vfd_ref_inc = true;
+
+        } else {
+
+            /* Register the VFL driver */
+
+            if ((vfd_id = H5FD_register_driver_by_name(vfd_name, true)) < 0)
+                HGOTO_ERROR(H5E_VFL, H5E_CANTREGISTER, FAIL, "can't register VFL driver");
+
+            vfd_ref_inc = true;
+
+        } 
+    }
+
+    if (NULL == (plist = (H5P_genplist_t *)H5I_object_verify(fapl_id, H5I_GENPROP_LST)))
+        HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, FAIL, "not a property list");
+
+    if (H5P_set_driver(plist, vfd_id, NULL, vfd_config_str_ptr) < 0)
+        HGOTO_ERROR(H5E_VFL, H5E_CANTSET, FAIL, "can't set vfd configuration string");
+
+done:
+
+    /* take down lex_vars */
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down lex_vars.");
+
+    /* take down top_pair */
+
+    if ( H5CL_take_down_nv_pair(&top_pair) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down top_pair.");
+
+    /* Clean up on error */
+    if (ret_value < 0) {
+        if (vfd_id >= 0 && vfd_ref_inc && H5I_dec_app_ref(vfd_id) < 0)
+            HDONE_ERROR(H5E_PLIST, H5E_CANTDEC, FAIL, "unable to unregister VFL driver");
+    }
+
+    FUNC_LEAVE_NOAPI(ret_value)
+
+} /* H5CL_load_vfd_config_str_into_fapl() */
+
+
+/*******************************************************************************
+ *
+ * Function:    H5CL_parse_config()
+ *
+ * Purpose:     Given an input string containing a name value pair, whose
+ *              value is a name value list:
+ *
+ *              1) Parse the name value pair, and verify that the name 
+ *                 of the value matches the supplied value.
+ *
+ *              2) Parse the name value list, loading the names and values 
+ *                 of each entry in the into the supplied array of 
+ *                 H5CL_nv_pair_t
+ *
+ *              Note that this function allocates strings in the array of 
+ *              H5CL_nv_pair_t.  These strings must be freed by the caller
+ *              via calls to H5CL_take_down_nv_pair().
+ * 
+ *                                              JRM -- 12/5/25
+ *
+ * Return:      Success:        non-negative
+ *              Failure:        negative
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+herr_t
+H5CL_parse_config(const char * input_str_ptr, char * expected_name_ptr, H5CL_nv_pair_t nv_pairs[],
+                  int num_pairs)
+{
+    int i;
+    H5CL_nv_pair_t top_pair;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL, 
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    }; 
+    herr_t ret_value = SUCCEED; /* Return value */
+
+    FUNC_ENTER_NOAPI(FAIL)
+
+    assert( input_str_ptr );
+    assert( expected_name_ptr );
+    assert( num_pairs >= 0 );
+
+    top_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&top_pair) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize top_pair.");
+
+    for ( i = 0; i < num_pairs; i++ ) {
+
+        if ( H5CL_init_nv_pair(&(nv_pairs[i])) < 0 )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize the pairs array.");
+    }
+
+
+    /* setup lex_vars for parsing the expected top level name value pair */
+    if ( H5CL__init_lex_vars(input_str_ptr, &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize lex_vars 1.");
+
+    /* parse the top level name value pair */
+    if ( H5CL__parse_name_value_pair(&top_pair, &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't parse top level name val pair.");
+
+    /* verify that the name in the top level name value pair matches the expected_name */
+    if ( 0 != strcmp(top_pair.name_ptr, expected_name_ptr) ) 
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "top level name value pair mismatch.");
+
+    /* verify that the value of the top level name value pair is a name value pair list */
+    if ( top_pair.val_type != H5CL_VAL_LIST )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "value of top level name value pair is not a list.");
+
+    /* take down lex_vars in preparation for parsing the name value pair list */
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down lex_vars 1.");
+
+
+    /* setup lex_vars for the parsing the list in the top level name value pair.
+     * Since we are re-using lex_vars, we must re-initialize the struct tag since
+     * it was set to an invalid value by H5CL__take_down_lex_vars()..
+     */
+    lex_vars.struct_tag = H5CL_LEX_VARS_STRUCT_TAG;
+    if ( H5CL__init_lex_vars((char *)(top_pair.vlen_val_ptr), &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't initialize lex_vars 2.");
+
+    /* parse the name value pair list from the top level name value pair */
+    if ( H5CL__parse_name_value_pair_list(nv_pairs, num_pairs, &lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't parse name val pair list.");
+
+done:
+
+    /* take down lex_vars after parsing the name value pair list */
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down lex_vars 1.");
+
+    /* take down top_pair */
+    if ( H5CL_take_down_nv_pair(&top_pair) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down top_pair.");
+
+
+    FUNC_LEAVE_NOAPI(ret_value)
+
+} /* H5CL_parse_config() */
+
+
+/*******************************************************************************
+ *
  * Function:    H5CL__init_lex_vars()
  *
  * Purpose:     Initialize the supplied instance of struct_H5CL_lex_vars_t 
@@ -88,6 +367,7 @@
 herr_t
 H5CL__init_lex_vars(const char * input_str_ptr, H5CL_lex_vars_t * lex_vars_ptr)
 {
+    int i;
     size_t input_str_len;
     herr_t ret_value = SUCCEED; /* Return value */
 
@@ -114,13 +394,14 @@ H5CL__init_lex_vars(const char * input_str_ptr, H5CL_lex_vars_t * lex_vars_ptr)
     /* next_char_ptr to the first character in the input string */
     lex_vars_ptr->next_char_ptr = lex_vars_ptr->input_str_ptr;
 
-    /* Set line_num and char_num to zero.  Note that line and char
-     * numbers are relative to the supplied input string, which 
-     * may be a subset of the externally supplied configuration 
-     * string.
-     */
-    lex_vars_ptr->line_num = 0;
-    lex_vars_ptr->char_num = 9;
+    /* set end_of_input to false */
+    lex_vars_ptr->end_of_input = false;
+
+    /* Null the err_ctx array */
+    for ( i = 0; i < H5CL_ERR_CTX_LEN; i++ ) {
+
+        lex_vars_ptr->err_ctx[i] = '\0';
+    } 
 
     /* now set up the token. */
 
@@ -205,6 +486,100 @@ done:
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* H5CL__init_lex_vars() */
+
+
+/*******************************************************************************
+ *
+ * Function:    H5CL__construct_err_ctx()
+ *
+ * Purpose:     Using the current value of next_char_ptr as the point
+ *              at which the error was detected, construct the error 
+ *              context string with the error roughtly centered.
+ *
+ *              The error context string is used to construct the error 
+ *              messages.
+ *
+ *              Note that thus function should not be called unless 
+ *              lex vars has been successfully setup.
+ *
+ *                                                    JRM - 1/08/26
+ *
+ * Parameters:
+ *
+ *    lex_vars_ptr: Pointer to the instance of H5CL_lex_vars_t containing 
+ *              the input string.
+ *
+ * Return:      Success:        non-negative
+ *              Failure:        negative
+ *
+ *  Changes:
+ *
+ *        - None.
+ *
+ *******************************************************************************/
+
+herr_t
+H5CL__construct_err_ctx(H5CL_lex_vars_t * lex_vars_ptr)
+{
+    char * ctx_start;
+    char * char_ptr;
+    int i = 0;
+    int prefix_len = 3;
+
+    FUNC_ENTER_NOAPI_NOINIT_NOERR
+
+    assert(lex_vars_ptr);
+    assert(H5CL_LEX_VARS_STRUCT_TAG == lex_vars_ptr->struct_tag);
+    assert(H5CL_TOKEN_STRUCT_TAG == lex_vars_ptr->token.struct_tag);
+    assert(lex_vars_ptr->input_str_ptr);
+    assert(lex_vars_ptr->next_char_ptr);
+
+    if ( (lex_vars_ptr->next_char_ptr - lex_vars_ptr->input_str_ptr) <= 
+         (H5CL_ERR_CTX_LEN / 2) ) {
+
+        ctx_start = lex_vars_ptr->input_str_ptr;
+
+    } else {
+
+        ctx_start = lex_vars_ptr->next_char_ptr - (H5CL_ERR_CTX_LEN / 2);
+    }
+
+    if ( ctx_start == lex_vars_ptr->input_str_ptr ) {
+
+        prefix_len = 0;
+
+    } else { /* write the prefix */
+
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+    }
+
+    char_ptr = ctx_start;
+
+    while ( ( i < (H5CL_ERR_CTX_LEN + prefix_len) ) && ( '\0' != *char_ptr ) ) {
+
+        (lex_vars_ptr->err_ctx)[i] = *char_ptr;
+        char_ptr++;
+        i++;
+    }
+
+    if ( ( (H5CL_ERR_CTX_LEN + prefix_len) == i ) && ( '\0' != *char_ptr ) ) {
+
+        /* write the postfix */
+
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+        (lex_vars_ptr->err_ctx)[i++] = '.';
+    }
+
+    assert ( i <= H5CL_ERR_CTX_LEN + 6 );
+
+    (lex_vars_ptr->err_ctx)[i] = '\0';
+
+    FUNC_LEAVE_NOAPI(SUCCEED)
+
+} /* H5CL__construct_err_ctx() */
 
 
 /*******************************************************************************
@@ -332,10 +707,38 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr)
 
             } else {
 
-                /* We have encountered an illegal character.  Throw an error. */
+                char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
 
-                /* replace with error call */
-                assert(false); 
+                /* increment lex_vars_ptr->next_char_ptr.  For normal operation,
+                 * this serves no purpose, as any error will abort the parse.
+                 * However, incrementing next_char_ptr allows us perform multiple 
+                 * invalid character error checks on a single input string.
+                 */
+                lex_vars_ptr->next_char_ptr++;
+
+                /* We have encountered an illegal character.  Construct an 
+                 * error message and report an error.
+                 */
+
+                if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Ileagal char \'%c\' in input string.  Error constructing context.",
+                             next_char);
+
+                } else if ( '%' == next_char ) {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Percent sign in input string.  Context: %s",
+                             lex_vars_ptr->err_ctx);
+                } else {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Illagal char \'%c\' in input string.  Context: %s",
+                             next_char, lex_vars_ptr->err_ctx);
+                }
+
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
             }
 
         } /* while */
@@ -457,8 +860,8 @@ done:
  *******************************************************************************/
 
 herr_t
-H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr, 
-                       H5CL_lex_vars_t * lex_vars_ptr)
+H5CL__lex_read_token(bool value_expected, bool eoi_expected, 
+                     H5CL_token_t **token_ptr_ptr, H5CL_lex_vars_t * lex_vars_ptr)
 {
     char next_char;
     herr_t ret_value = SUCCEED; /* Return value */
@@ -469,7 +872,7 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
     assert(lex_vars_ptr);
     assert(H5CL_LEX_VARS_STRUCT_TAG == lex_vars_ptr->struct_tag);
     assert(H5CL_TOKEN_STRUCT_TAG == lex_vars_ptr->token.struct_tag);
-    
+
     if ( lex_vars_ptr->end_of_input )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Attempt to read past end of input string.");
 
@@ -504,6 +907,8 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
 
             do {
 
+                assert(lex_vars_ptr->token.str_len < lex_vars_ptr->token.max_str_len);
+
                 if ( '(' == next_char ) {
 
                     paren_depth++;
@@ -517,9 +922,33 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
                 lex_vars_ptr->next_char_ptr++;
                 next_char = *(lex_vars_ptr->next_char_ptr);
 
-                assert(lex_vars_ptr->token.str_len < lex_vars_ptr->token.max_str_len);
+                assert(lex_vars_ptr->token.str_len <= lex_vars_ptr->token.max_str_len);
 
             } while ( ( '\0' != next_char ) && ( paren_depth > 0 ) );
+
+            if ( ( paren_depth > 0 ) && ( '\0' == next_char ) )  {
+
+                char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+                /* We have read of the end of the input string.  Flag an un-terminated 
+                 * list error.
+                 */
+
+                if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Un-terminated list in input string.  Error constructing context.");
+
+                } else {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Un-terminated list in input string.  Context: %s",
+                             lex_vars_ptr->err_ctx);
+                }
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
+            }
+
+            assert(lex_vars_ptr->token.str_len <= lex_vars_ptr->token.max_str_len);
 
             (lex_vars_ptr->token.str_ptr)[lex_vars_ptr->token.str_len] = '\0';
         }
@@ -560,7 +989,7 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
         lex_vars_ptr->next_char_ptr++;
         next_char = *(lex_vars_ptr->next_char_ptr);
 
-        while ( ( '"' != next_char ) && ( ! escape ) ) {
+        while ( ( '\0' != next_char ) && ( ( '"' != next_char ) || ( escape ) ) ) {
 
             if ( '\\' == next_char ) {
 
@@ -579,7 +1008,27 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
 
         (lex_vars_ptr->token.str_ptr)[lex_vars_ptr->token.str_len] = '\0';
 
-        assert( '"' == next_char );
+        if ( '\0' == next_char ) {
+
+            char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+            /* We have read of the end of the input string.  Flag an un-terminated 
+             * quote string error.
+             */
+
+            if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Un-terminated quote string in input string.  Error constructing context.");
+
+            } else {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Un-terminate quote string in input string.  Context: %s",
+                         lex_vars_ptr->err_ctx);
+            }
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
+        }
 
         lex_vars_ptr->next_char_ptr++;
 
@@ -647,7 +1096,7 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
 
             next_byte = (uint8_t)strtoll(byte_str, NULL, 16);
 
-            (lex_vars_ptr->token.str_ptr)[lex_vars_ptr->token.str_len++] = (char)next_byte;
+            (lex_vars_ptr->token.bb_ptr)[lex_vars_ptr->token.bb_len++] = next_byte;
         }
 
         (lex_vars_ptr->token.str_ptr)[lex_vars_ptr->token.str_len] = '\0';
@@ -671,6 +1120,62 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
 
     } else if ( ( '+' == next_char ) || ( '-' == next_char ) || 
                 ( '.' == next_char ) || ( isdigit(next_char) ) ) {  /* integer or float */
+
+        char next_char_plus_1 = *(lex_vars_ptr->next_char_ptr + 1);
+        char next_char_plus_2;
+        bool ill_formed = false;
+        int chars_to_skip = 1;
+
+        if ( '\0' != next_char_plus_1 ) {
+
+            next_char_plus_2 = *(lex_vars_ptr->next_char_ptr + 2);
+        }
+
+        /* check for mal-formed numeric constants */
+        if ( ( ( '+' == next_char ) || ( '-' == next_char ) ) && 
+             ( ( ! isdigit(next_char_plus_1) ) && ( '.' != next_char_plus_1 ) ) ) {
+
+            ill_formed = true;
+            chars_to_skip = 2;
+ 
+        } else if ( ( ( '+' == next_char ) || ( '-' == next_char ) ) && 
+                    ( '.' == next_char_plus_1 ) && ( ! isdigit(next_char_plus_2) ) ) {
+
+            ill_formed = true;
+            chars_to_skip = 3;
+
+        } else if ( ( '.' == next_char ) && ( ! isdigit(next_char_plus_1) ) ) {
+
+            ill_formed = true;
+            chars_to_skip = 2;
+        }
+
+        if ( ill_formed ) {
+
+            /* we have an ill formed numerical constant -- flag an error */
+
+            char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+            if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Ill-formed numerical constant.  Error constructing context.");
+
+            } else {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Ill-formed numerical constant.  Context: %s",
+                         lex_vars_ptr->err_ctx);
+            }
+
+            /* while it isn't necessary functionally, increment lex_vars_ptr->next_char_ptr
+             * past the ill formed numerical constant.  Do this to facilitate testing.
+             */
+            lex_vars_ptr->next_char_ptr += chars_to_skip;
+
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
+
+        } /* il_formed */
 
         /* read integer or float token */
 
@@ -703,24 +1208,47 @@ H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
         if ( is_float ) {
 
             lex_vars_ptr->token.code = H5CL_FLOAT_TOK;
+            errno = 0;
             lex_vars_ptr->token.f_val = strtod(lex_vars_ptr->token.str_ptr, NULL);
+            assert(0 == errno);
 
         } else {
 
             lex_vars_ptr->token.code = H5CL_INT_TOK;
+            errno = 0;
             lex_vars_ptr->token.int_val = strtoll(lex_vars_ptr->token.str_ptr, NULL, 10);
+            assert(0 == errno);
         }
-
-        assert(0 == errno);
 
     } else if ( '\0' == next_char ) { /* end of input */
 
         /* end of input string */
+        if ( eoi_expected ) {
 
-        lex_vars_ptr->token.code = H5CL_EOS_TOK;
-        lex_vars_ptr->token.str_ptr[0] = '\0';
-        lex_vars_ptr->token.str_len = 0;
+            lex_vars_ptr->token.code = H5CL_EOS_TOK;
+            lex_vars_ptr->token.str_ptr[0] = '\0';
+            lex_vars_ptr->token.str_len = 0;
 
+        } else {
+
+            char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+            /* EOI not expected -- flag an un-expected end of input error. */
+
+            if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Un-expected end of input string.  Error constructing context.");
+
+            } else {
+
+                snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Un-expected end of input string.  Context: %s",
+                         lex_vars_ptr->err_ctx);
+            }
+
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
+        }
     } else {
 
         /* should be un-reachable */
@@ -739,7 +1267,7 @@ done:
 
 /*******************************************************************************
  *
- * Function:    H5CL__init_nv_pair()
+ * Function:    H5CL_init_nv_pair()
  *
  * Purpose:     Initialize the supplied instance of struct H5CL_nv_pair_t. 
  *              The struct_tag is presumed to be set, but all other fields 
@@ -763,7 +1291,7 @@ done:
  *******************************************************************************/
 
 herr_t
-H5CL__init_nv_pair(H5CL_nv_pair_t * nv_pair_ptr)
+H5CL_init_nv_pair(H5CL_nv_pair_t * nv_pair_ptr)
 {
     herr_t ret_value = SUCCEED; /* Return value */
 
@@ -785,12 +1313,12 @@ done:
 
     FUNC_LEAVE_NOAPI(ret_value)
 
-} /* H5CL__init_nv_pair() */
+} /* H5CL_init_nv_pair() */
 
 
 /*******************************************************************************
  *
- * Function:    H5CL__take_down_nv_pair()
+ * Function:    H5CL_take_down_nv_pair()
  *
  * Purpose:     Take down the supplied instance of struct H5CL_nv_pair_t. 
  *
@@ -814,7 +1342,7 @@ done:
  *******************************************************************************/
 
 herr_t
-H5CL__take_down_nv_pair(H5CL_nv_pair_t * nv_pair_ptr)
+H5CL_take_down_nv_pair(H5CL_nv_pair_t * nv_pair_ptr)
 {
     herr_t ret_value = SUCCEED; /* Return value */
 
@@ -849,7 +1377,7 @@ done:
 
     FUNC_LEAVE_NOAPI(ret_value)
 
-} /* H5CL__take_down_nv_pair() */
+} /* H5CL_take_down_nv_pair() */
 
 
 /*******************************************************************************
@@ -909,28 +1437,60 @@ H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t * lex_v
 
 
     /* parse the left parentheses */
-    if ( H5CL__lex_read_token(false, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(false, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- '(' expected.");
 
     assert(H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag);
 
     if ( H5CL_L_PAREN_TOK != token_ptr->code ) {
 
-        assert( H5CL_L_PAREN_TOK == token_ptr->code );
+        char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+        /* We have encountered an syntax error -- first token in a NV pair must be a left paren */
+
+        if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                "Syntax error -- Initial \'(\' of name value pair expected..  Error constructing context.");
+
+        } else {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- Initial \'(\' of name value pair expected.  Context: %s",
+                     lex_vars_ptr->err_ctx);
+        }
+
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
     }
 
 
     /* parse the name in the name value pair, duplicate the string 
      * containing the name and store its address in name_ptr.
      */
-    if ( H5CL__lex_read_token(false, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(false, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- <name> expected.");
 
     assert(H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag);
 
     if ( H5CL_SYMBOL_TOK != token_ptr->code ) {
 
-        assert(false);
+        char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+        /* syntax error -- name of name value pair expected */
+
+        if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- name of name value pair expected.  Error constructing context.");
+
+        } else {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- name of name value pair expected.  Context: %s",
+                     lex_vars_ptr->err_ctx);
+        }
+
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
     }
 
     assert( NULL != token_ptr->str_ptr );
@@ -949,7 +1509,7 @@ H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t * lex_v
     /* parse the value associated with the name, and store it as appropriate 
      * in local variables.
      */
-    if ( H5CL__lex_read_token(true, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(true, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- <value> expected.");
 
     assert( H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag );
@@ -1017,21 +1577,54 @@ H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t * lex_v
             break;
 
         default: 
-            /* replace with unexpected token error message */ 
-            assert(false);
+            {
+                char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+                /* syntax error -- value of name value pair expected */
+
+                if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                         "Syntax error -- value of name value pair expected.  Error constructing context.");
+
+                } else {
+
+                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                             "Syntax error -- value of name value pair expected.  Context: %s",
+                             lex_vars_ptr->err_ctx);
+                }
+
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
+            }
             break;
     }
 
 
     /* parse the right parentheses */
-    if ( H5CL__lex_read_token(false, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(false, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- ')' expected.");
 
     assert(H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag);
 
     if ( H5CL_R_PAREN_TOK != token_ptr->code ) {
 
-        assert(false);
+        char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+        /* We have encountered an syntax error -- MV pair terminal r paren expected */
+
+        if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                "Syntax error -- Terminal \')\' of name value pair expected..  Error constructing context.");
+
+        } else {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- Terminal \')\' of name value pair expected.  Context: %s",
+                     lex_vars_ptr->err_ctx);
+        }
+
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
     }
 
 
@@ -1167,14 +1760,30 @@ H5CL__parse_name_value_pair_list(H5CL_nv_pair_t * nv_pairs, int max_nv_pairs,
 
 
     /* parse the left parentheses */
-    if ( H5CL__lex_read_token(false, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(false, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- '(' expected.");
 
     assert(H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag);
 
     if ( H5CL_L_PAREN_TOK != token_ptr->code ) {
 
-        assert( H5CL_L_PAREN_TOK == token_ptr->code );
+        char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+        /* We have encountered an syntax error -- initial left paren of name value pair list expected */
+
+        if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+             "Syntax error -- Initial \'(\' of name value pair listexpected..  Error constructing context.");
+
+        } else {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- Initial \'(\' of name value pair list expected.  Context: %s",
+                     lex_vars_ptr->err_ctx);
+        }
+
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
     }
 
     
@@ -1202,14 +1811,32 @@ H5CL__parse_name_value_pair_list(H5CL_nv_pair_t * nv_pairs, int max_nv_pairs,
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "max number of name value pairs exceeded.");
 
     /* parse the right parentheses */
-    if ( H5CL__lex_read_token(false, &token_ptr, lex_vars_ptr) < 0 )
+    if ( H5CL__lex_read_token(false, false, &token_ptr, lex_vars_ptr) < 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "H5CL__lex_read_token() failed -- ')' expected.");
 
     assert(H5CL_TOKEN_STRUCT_TAG == token_ptr->struct_tag);
 
     if ( H5CL_R_PAREN_TOK != token_ptr->code ) {
 
-        assert(false);
+        char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
+        /* We have encountered an syntax error -- MV pair list terminal r paren expected */
+
+        if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- Terminal \')\' of name value pair list or leading \'(\' of "
+                     "name value pair expected.  Error constructing context.");
+
+        } else {
+
+            snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
+                     "Syntax error -- Terminal \')\' of name value pair list or leading \'(\' of "
+                     "name value pair expected.  Context: %s",
+                     lex_vars_ptr->err_ctx);
+        }
+
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
     }
 
 done:

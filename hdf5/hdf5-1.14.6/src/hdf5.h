@@ -64,6 +64,8 @@
 #include "H5FDmpi.h"      /* MPI-based file drivers                   */
 #include "H5FDmulti.h"    /* Usage-partitioned file family            */
 #include "H5FDonion.h"    /* Onion file I/O                           */
+#include "H5FDpb.h"       /* page buffer -- converts random I/O to paged I/O */
+#include "H5FDcrypt.h"    /* encryption VFD -- encrypts / decrypts paged I/O */
 #include "H5FDros3.h"     /* R/O S3 "file" I/O                        */
 #include "H5FDsec2.h"     /* POSIX unbuffered file I/O                */
 #include "H5FDsplitter.h" /* Twin-channel (R/W & R/O) I/O passthrough */

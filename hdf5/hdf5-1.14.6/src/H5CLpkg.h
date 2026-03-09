@@ -204,12 +204,10 @@ typedef struct H5CL_token_t
  * end_of_input: Boolean that is initialized to false, and set to true when 
  *              the end of the input string is reached.
  *
- * line_num:    Integer value initialized to zero, and incremented each time 
- *              next_char_ptr is incremented past a new line character.
- *
- * char_num:    Integer value initialized to zero, and incremented each time
- *              next_char_ptr is incremented.  It is reset to zero each time
- *              line_num is incremented.
+ * err_ctx:     Array of char of length H5CL_ERR_CTX_LEN + 1 used to stage
+ *              a string containing a substring of the input string 
+ *              centered at the point at which a syntax error was detected.
+ *              This string is used to provide context for error messages.
  *
  * token:       Instance of struct H5CL_token_t.  A pointer to this instance 
  *              is returned by the lexer, and reused for each new token 
@@ -219,22 +217,22 @@ typedef struct H5CL_token_t
 
 #define H5CL_LEX_VARS_STRUCT_TAG 		0x006A
 #define H5CL_INVALID_LEX_VARS_STRUCT_TAG 	0x06A0
+#define H5CL_ERR_CTX_LEN                        30
+#define H5CL_MAX_ERR_MSG_LEN                    (128 + H5CL_ERR_CTX_LEN + 6)
 
 typedef struct H5CL_lex_vars_t
 {
-	uint32_t struct_tag;
+    uint32_t struct_tag;
 
-        char * input_str_ptr;
+    char * input_str_ptr;
 
-        char * next_char_ptr;
+    char * next_char_ptr;
 
-        bool end_of_input;
+    bool end_of_input;
 
-        int32_t line_num;
+    char err_ctx[H5CL_ERR_CTX_LEN + 7];
 
-        int32_t char_num;
-
-        struct H5CL_token_t token;
+    struct H5CL_token_t token;
 	
 } H5CL_lex_vars_t;
 
@@ -249,12 +247,11 @@ typedef struct H5CL_lex_vars_t
 
 H5_DLL herr_t H5CL__init_lex_vars(const char * input_str_ptr, H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__take_down_lex_vars(H5CL_lex_vars_t * lex_vars_ptr);
+H5_DLL herr_t H5CL__construct_err_ctx(H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__lex_peek_next_char(char * next_char_ptr, H5CL_lex_vars_t * lex_vars_ptr);
-H5_DLL herr_t H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
-                                     H5CL_lex_vars_t * lex_vars_ptr);
-H5_DLL herr_t H5CL__init_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
-H5_DLL herr_t H5CL__take_down_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
+H5_DLL herr_t H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **token_ptr_ptr,
+                                   H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__parse_name_value_pair_list(H5CL_nv_pair_t * nv_pairs, int max_nv_pairs,
                                                 H5CL_lex_vars_t * lex_vars_ptr);

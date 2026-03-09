@@ -45,6 +45,8 @@
 #include "H5FDlog.h"
 #include "H5FDfamily.h"
 #include "H5FDmulti.h"
+#include "H5FDpb.h"    /* page buffer -- converts random I/O to paged I/O */
+#include "H5FDcrypt.h" /* encryption VFD -- encrypts / decrypts paged I/O */
 #include "H5FDstdio.h" /* Standard C buffered I/O                  */
 #include "H5FDsplitter.h"
 #ifdef H5_HAVE_PARALLEL
@@ -426,7 +428,6 @@ static herr_t H5P__facc_mpi_info_close(const char *name, size_t size, void *valu
 #endif /* H5_HAVE_PARALLEL */
 
 /* Internal routines */
-static herr_t H5P__facc_set_def_driver_check_predefined(const char *driver_name, hid_t *driver_id);
 
 /*********************/
 /* Package Variables */
@@ -885,7 +886,7 @@ H5P__facc_set_def_driver(void)
         } /* end else-if */
         else {
             /* Check for VFL drivers that ship with the library */
-            if (H5P__facc_set_def_driver_check_predefined(driver_env_var, &driver_id) < 0)
+            if (H5P_facc_set_def_driver_check_predefined(driver_env_var, &driver_id) < 0)
                 HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't check for predefined VFL driver name");
             else if (driver_id > 0) {
                 if (H5I_inc_ref(driver_id, true) < 0)
@@ -938,7 +939,7 @@ done:
 } /* end H5P__facc_set_def_driver() */
 
 /*-------------------------------------------------------------------------
- * Function:    H5P__facc_set_def_driver_check_predefined
+ * Function:    H5P_facc_set_def_driver_check_predefined
  *
  * Purpose:     Checks a given driver name against a list of predefined
  *              names for VFL drivers that are internal to HDF5. If a name
@@ -950,12 +951,12 @@ done:
  *
  *-------------------------------------------------------------------------
  */
-static herr_t
-H5P__facc_set_def_driver_check_predefined(const char *driver_name, hid_t *driver_id)
+herr_t
+H5P_facc_set_def_driver_check_predefined(const char *driver_name, hid_t *driver_id)
 {
     herr_t ret_value = SUCCEED;
 
-    FUNC_ENTER_PACKAGE
+    FUNC_ENTER_NOAPI(FAIL)
 
     assert(driver_name);
     assert(driver_id);
@@ -1043,6 +1044,17 @@ H5P__facc_set_def_driver_check_predefined(const char *driver_name, hid_t *driver
 #else
         HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "Windows VFD is not enabled");
 #endif
+
+#if 1 /* extend function for page buffer and encryption VFDs.  Not sure if this code will stay */
+    }
+    else if (!strcmp(driver_name, "page_buffer")) {
+        if ((*driver_id = H5FD_PB) < 0)
+            HGOTO_ERROR(H5E_VFL, H5E_UNINITIALIZED, FAIL, "couldn't initialize page buffer VFD");
+    }
+    else if (!strcmp(driver_name, "encryption_VFD")) {
+        if ((*driver_id = H5FD_CRYPT) < 0)
+            HGOTO_ERROR(H5E_VFL, H5E_UNINITIALIZED, FAIL, "couldn't initialize log VFD");
+#endif
     }
     else {
         *driver_id = H5I_INVALID_HID;
@@ -1050,7 +1062,7 @@ H5P__facc_set_def_driver_check_predefined(const char *driver_name, hid_t *driver
 
 done:
     FUNC_LEAVE_NOAPI(ret_value)
-} /* end H5P__facc_set_def_driver_check_predefined() */
+} /* end H5P_facc_set_def_driver_check_predefined() */
 
 /*-------------------------------------------------------------------------
  * Function:    H5Pset_alignment
