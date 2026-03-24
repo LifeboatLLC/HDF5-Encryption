@@ -117,31 +117,36 @@
  *                                                                            
  * struct_tag:  unsigned integer which must always contain the the value               
  *		H5CL_TOKEN_STRUCT_TAG.  The struct_tag field allows us to 
- *              verify that a pointer to struct H5FD_cl_token_t does in fact 
+ *              verify that a pointer to struct H5CL_token_t does in fact 
  *              point to an instance of same.                                           
  *                                                                         
  * code:        Integer code indicating the type of the token.  The set of 
- *              alowable values for this field is equal to the set of 
- *              H5FD_CL_TOKEN #defines earlier in this file.                                
+ *              allowable values for this field is equal to the set of 
+ *              H5CL_*_TOK #defines earlier in this file.                                
  *                                                                          
  * str_ptr:     Pointer to char.  str_ptr points to a dynamically allocated
  *		string which contains a text representation of the token. 
  *              Note that in the case of numerical values, *str_ptr need not 
  *              agree with val, as *str_ptr may contain a text representation 
  *              of an out of range value. 
+ *
+ *              The buffer pointed to by str_ptr is recycled, and at present,
+ *              will always be of the same length as the input string in the
+ *              containing instance of H5CL_lex_vars_t.
  *                                                                         
  * str_len:     size_t containing the length of the null terminated string 
  *		pointed to by str_ptr.                                     
  *                                                                           
  * max_str_len: size_t containing the number of bytes in the buffer pointed
  *		to by str_ptr.  Note that should always be larger than     
- *              str_len.  Since we recycle *str_ptr, it is possible for   
- *              max_str_len to be much larger than str_len.              
+ *              str_len.  At present, max_str_len will always be the same as
+ *              the length of the input string in the containing instance of
+ *              of H5CL_lex_vars_t
  *                                                                      
  * int_val:     int64_t containing any integer value associated with the 
  *              instance of H5FD_cl_token_t.                                 
  *                                                                     
- * f_val:       Double containg any floating point value associated with the 
+ * f_val:       Double containing any floating point value associated with the 
  *              instance of H5FD_cl_token_t.                                    
  *
  * bb_ptr:      Pointer to a dynamically vector of uint8_t of length equal 
@@ -150,7 +155,7 @@
  *              bb_ptr is always max_str_len.
  *
  * bb_len       size_t field containing the number of bytes in the binary 
- *              blob. As per str_len, this value must always be lets than
+ *              blob. As per str_len, this value must always be less than
  *              max_str_len.
  *                                                                          
  *******************************************************************************/
@@ -189,7 +194,7 @@ typedef struct H5CL_token_t
  * variables employed by the configuration language lexer code. The fields of
  * this structure are discussed individually below.
  *                               
- * struct_tag:  Unsigend integer which must always contain the the value
+ * struct_tag:  Unsigned integer which must always contain the the value
  *		H5CL_LEX_VARS_SRUCT_TAG.  The struct_tag field allows us to 
  *              easily verify that a pointer to struct H5CL_lex_vars_t does in 
  *              fact point to an instance of same.
@@ -204,12 +209,10 @@ typedef struct H5CL_token_t
  * end_of_input: Boolean that is initialized to false, and set to true when 
  *              the end of the input string is reached.
  *
- * line_num:    Integer value initialized to zero, and incremented each time 
- *              next_char_ptr is incremented past a new line character.
- *
- * char_num:    Integer value initialized to zero, and incremented each time
- *              next_char_ptr is incremented.  It is reset to zero each time
- *              line_num is incremented.
+ * err_ctx:     Array of char of length H5CL_ERR_CTX_LEN + 1 used to stage
+ *              a string containing a substring of the input string 
+ *              centered at the point at which a syntax error was detected.
+ *              This string is used to provide context for error messages.
  *
  * token:       Instance of struct H5CL_token_t.  A pointer to this instance 
  *              is returned by the lexer, and reused for each new token 
@@ -219,22 +222,22 @@ typedef struct H5CL_token_t
 
 #define H5CL_LEX_VARS_STRUCT_TAG 		0x006A
 #define H5CL_INVALID_LEX_VARS_STRUCT_TAG 	0x06A0
+#define H5CL_ERR_CTX_LEN                        30
+#define H5CL_MAX_ERR_MSG_LEN                    (128 + H5CL_ERR_CTX_LEN + 6)
 
 typedef struct H5CL_lex_vars_t
 {
-	uint32_t struct_tag;
+    uint32_t struct_tag;
 
-        char * input_str_ptr;
+    char * input_str_ptr;
 
-        char * next_char_ptr;
+    char * next_char_ptr;
 
-        bool end_of_input;
+    bool end_of_input;
 
-        int32_t line_num;
+    char err_ctx[H5CL_ERR_CTX_LEN + 7];
 
-        int32_t char_num;
-
-        struct H5CL_token_t token;
+    struct H5CL_token_t token;
 	
 } H5CL_lex_vars_t;
 
@@ -249,12 +252,11 @@ typedef struct H5CL_lex_vars_t
 
 H5_DLL herr_t H5CL__init_lex_vars(const char * input_str_ptr, H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__take_down_lex_vars(H5CL_lex_vars_t * lex_vars_ptr);
+H5_DLL herr_t H5CL__construct_err_ctx(H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__lex_peek_next_char(char * next_char_ptr, H5CL_lex_vars_t * lex_vars_ptr);
-H5_DLL herr_t H5CL__lex_read_token(bool value_expected, H5CL_token_t **token_ptr_ptr,
-                                     H5CL_lex_vars_t * lex_vars_ptr);
-H5_DLL herr_t H5CL__init_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
-H5_DLL herr_t H5CL__take_down_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
+H5_DLL herr_t H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **token_ptr_ptr,
+                                   H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t * lex_vars_ptr);
 H5_DLL herr_t H5CL__parse_name_value_pair_list(H5CL_nv_pair_t * nv_pairs, int max_nv_pairs,
                                                 H5CL_lex_vars_t * lex_vars_ptr);

@@ -13,11 +13,12 @@
 /*
  * Purpose:     Tests the basic features of Virtual File Drivers
  */
-
+#define H5E_FRIEND
 #define H5CL_FRIEND
 
 #include "h5test.h"
 #include "H5CLpkg.h"
+#include "H5Epkg.h"
 
 /* utility functions */
 static bool cl_lexer_test_verify_token(H5CL_token_t * token_ptr, int token_num, int32_t expected_code, 
@@ -28,11 +29,27 @@ static int cl_test_verify_nv_pair(H5CL_nv_pair_t * nv_pair_ptr, int nv_pair_num,
                                   const void * expected_vlen_val_ptr, size_t expected_len, bool verbose);
 static int cl_test_verify_nv_pairs(H5CL_nv_pair_t * actual_nv_pairs, H5CL_nv_pair_t * expected_nv_pairs,
                                    int num_nv_pairs, bool verbose);
+static int cl_test_verify_error_stack(hid_t maj_num, hid_t min_num, const char *desc, bool verbose);
 
 /* test functions */
 static herr_t cl_lexer_smoke_check(void);
+static herr_t cl_lexer_detail_check(void);
+static herr_t cl_lexer_error_check_1(void);
+static herr_t cl_lexer_error_check_2(void);
+static herr_t cl_lexer_error_check_3(void);
+static herr_t cl_lexer_error_check_4(void);
 static herr_t cl_parse_name_val_pair_smoke_check(void);
+static herr_t cl_parse_nv_pair_error_check_1(void);
+static herr_t cl_parse_nv_pair_error_check_2(void);
+static herr_t cl_parse_nv_pair_error_check_3(void);
+static herr_t cl_parse_nv_pair_error_check_4(void);
+static herr_t cl_parse_nv_pair_error_check_5(void);
+static herr_t cl_parse_nv_pair_error_check_6(void);
+static herr_t cl_parse_nv_pair_error_check_7(void);
 static herr_t cl_parse_name_val_pair_list_smoke_check(void);
+static herr_t cl_parse_name_val_pair_list_err_check_1(void);
+static herr_t cl_parse_name_val_pair_list_err_check_2(void);
+static herr_t cl_parse_name_val_pair_list_err_check_3(void);
 herr_t cl_parser_smoke_check(void);
 
 
@@ -107,14 +124,14 @@ cl_lexer_test_verify_token(H5CL_token_t * token_ptr, int token_num,
 
             for ( i = 0; i < (int)expected_bb_len; i++ ) {
 
-                fprintf(stdout, "%2x ", (unsigned)(token_ptr->bb_ptr[i]));
+                fprintf(stdout, "0x%02x ", (unsigned)(token_ptr->bb_ptr[i]));
             }
 
             fprintf(stdout, "\nexpected bb = ");
 
             for ( i = 0; i < (int)expected_bb_len; i++ ) {
 
-                fprintf(stdout, "%2x ", (unsigned)(expected_bb_ptr[i]));
+                fprintf(stdout, "0x%02x ", (unsigned)(expected_bb_ptr[i]));
             }
 
             fprintf(stdout, "\n");
@@ -301,6 +318,75 @@ cl_test_verify_nv_pairs(H5CL_nv_pair_t * actual_nv_pairs,
 
 /*******************************************************************************
  *
+ * cl_test_verify_error_stack()
+ *
+ * Verify that the bottom entry on the current error stack has major and 
+ * minor error IDs and error message matching the supplied values.
+ *
+ *                                              JRM -- 1/10/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static int
+cl_test_verify_error_stack(hid_t maj_num, hid_t min_num, const char *desc, bool verbose)
+{
+    int failures = 0;
+    H5E_stack_t * estack_ptr;
+    H5E_entry_t * entry_ptr;
+    H5E_error2_t * err_ptr;
+
+    if ( NULL == (estack_ptr = H5E__get_my_stack()) ) {
+
+        failures++;
+
+        if ( verbose ) {
+
+            fprintf(stderr, "\ncl_test_verify_error_stack(): can't get error stack\n");
+        }
+    } else if ( estack_ptr->nused < 1 ) {
+
+        failures++;
+
+        if ( verbose ) {
+
+            fprintf(stderr, "\ncl_test_verify_error_stack(): error stack is empty\n");
+        }
+    } else {
+
+        entry_ptr = &(estack_ptr->entries[0]);
+        err_ptr = &(entry_ptr->err);
+
+        if ( ( maj_num != err_ptr->maj_num ) ||
+             ( min_num != err_ptr->min_num ) ||
+             ( 0 != strcmp(desc, err_ptr->desc) ) ) {
+
+            failures++;
+
+            if ( verbose ) {
+
+                fprintf(stderr, "\n\nActual / Expected major error number = 0x%llx / 0x%llx.\n",
+                        (long long)(err_ptr->maj_num), (long long)(maj_num));
+                fprintf(stderr, "Actual / Expected minor error number = 0x%llx / 0x%llx.\n",
+                        (long long)(err_ptr->min_num), (long long)(min_num));
+                fprintf(stderr, "Actual error desc = \"%s\".\n", err_ptr->desc);
+                fprintf(stderr, "Expected error desc = \"%s\".\n\n", desc);
+            }
+        }
+
+        H5E__clear_stack(estack_ptr);
+    }
+
+    return(failures);
+
+} /* cl_test_verify_error_stack() */
+
+
+/*******************************************************************************
+ *
  * cl_lexer_smoke_check()
  *
  * Initial set of lexer tests designed to verify basic functionality.  Note that
@@ -327,8 +413,7 @@ cl_lexer_smoke_check(void)
         /* input_str_ptr     = */ NULL,
         /* next_char_ptr     = */ NULL,
         /* end_of_input      = */ false, 
-        /* line_num          = */ 0,
-        /* char_num          = */ 0, 
+        /* err_ctx           = */ "",
         /* token             = */ {
         /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
         /* token.code        = */    H5CL_ERROR_TOK,
@@ -368,21 +453,21 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
     }
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 0 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 0 */
         TEST_ERROR;
 
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_L_PAREN_TOK, "(", 0, 0.0, NULL, 0, true) )
         TEST_ERROR;
 
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 1 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 1 */
         TEST_ERROR;
 
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
         TEST_ERROR;
 
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 2 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 2 */
         TEST_ERROR;
 
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_SYMBOL_TOK, "symbol", 0, 0.0, 
@@ -390,14 +475,14 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
 
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 3 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 3 */
         TEST_ERROR;
 
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_INT_TOK, "1", 1, 0.0, NULL, 0, true) )
         TEST_ERROR;
 
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 4 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 4 */
         TEST_ERROR;
     
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_FLOAT_TOK, "3.14159", 0, 3.14159, 
@@ -405,7 +490,7 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
     
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 5 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 5 */
         TEST_ERROR;
     
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_QSTRING_TOK, "Hello World", 0, 0.0, 
@@ -413,7 +498,7 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
     
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 6 */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 6 */
         TEST_ERROR;
     
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--00010203", 0, 0.0, 
@@ -421,7 +506,7 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
     
 
-    if ( H5CL__lex_read_token(true, &token_ptr, &lex_vars) < 0 ) /* 7 */
+    if ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) < 0 ) /* 7 */
         TEST_ERROR;
     
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_LIST_TOK, "( sec2 () )", 0, 0.0, 
@@ -429,7 +514,7 @@ cl_lexer_smoke_check(void)
         TEST_ERROR;
     
 
-    if ( H5CL__lex_read_token(false, &token_ptr, &lex_vars) < 0 ) /* 8 */
+    if ( H5CL__lex_read_token(false, true, &token_ptr, &lex_vars) < 0 ) /* 8 */
         TEST_ERROR;
     
     if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_EOS_TOK, "", 0, 0.0, NULL, 0, true) )
@@ -462,6 +547,870 @@ error:
 
 /*******************************************************************************
  *
+ * cl_lexer_detail_check()
+ *
+ * Initial set of lexer tests designed to verify basic functionality.  Note that
+ * these tests do not trigger any error conditinos in the lexer.
+ *
+ *                                              JRM -- 12/16/25
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_lexer_detail_check(void)
+{
+    int token_num = 0;
+    const char * input_string = "(()())/* comment */)A1 1+1-1 2A2 1.1.1 +.2-.3\"i\"A/**/B\"\\\"\")"
+                                "--0--123 --aAb --AaB --0ff)(/* commenta can appear in lists)"
+                                "(ilegal characters, i.e.!@#$%^;:&*, can appear in lists)"
+                                "( and ()(((arbitrary))nesting of((parens))))";
+    uint8_t bb_0[] = { 0 };
+    uint8_t bb_1[] = { 18, 48 };
+    uint8_t bb_2[] = { 170, 176 };
+    uint8_t bb_3[] = { 15, 240 };
+    size_t bb_0_len = 1;
+    size_t bb_1_len = 2;
+    size_t bb_2_len = 2;
+    size_t bb_3_len = 2;
+    H5CL_token_t * token_ptr;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language Lexer detail Check");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 0 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_L_PAREN_TOK, "(", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 1 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_L_PAREN_TOK, "(", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 2 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 3 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_L_PAREN_TOK, "(", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 4 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 5 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 6 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 7 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_SYMBOL_TOK, "A1", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 8 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_INT_TOK, "1", 1, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 9 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_INT_TOK, "+1", 1, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 10 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_INT_TOK, "-1", -1, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 11 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_INT_TOK, "2", 2, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 12 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_SYMBOL_TOK, "A2", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 13 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_FLOAT_TOK, "1.1", 0, 1.1, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 14 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_FLOAT_TOK, ".1", 0, .1, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 15 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_FLOAT_TOK, "+.2", 0, .2, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 16 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_FLOAT_TOK, "-.3", 0, -.3, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 17 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_QSTRING_TOK, "i", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 18 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_SYMBOL_TOK, "A", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 19 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_SYMBOL_TOK, "B", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 20 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_QSTRING_TOK, "\\\"", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 21 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 22 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--0", 0, 0.0, 
+                                          bb_0, bb_0_len, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 23 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--123", 0, 0.0, 
+                                          bb_1, bb_1_len, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 24 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--aAb", 0, 0.0, 
+                                          bb_2, bb_2_len, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 25 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--AaB", 0, 0.0, 
+                                          bb_2, bb_2_len, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 26 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_BIN_BLOB_TOK, "--0ff", 0, 0.0, 
+                                          bb_3, bb_3_len, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) < 0 ) /* 27 */
+        TEST_ERROR;
+
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_R_PAREN_TOK, ")", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) < 0 ) /* 28 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_LIST_TOK, 
+                                         "(/* commenta can appear in lists)", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) < 0 ) /* 29 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_LIST_TOK, 
+                                         "(ilegal characters, i.e.!@#$%^;:&*, can appear in lists)", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+    
+
+    if ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) < 0 ) /* 30 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_LIST_TOK, 
+                                         "( and ()(((arbitrary))nesting of((parens))))", 0, 0.0, 
+                                         NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__lex_read_token(false, true, &token_ptr, &lex_vars) < 0 ) /* 31 */
+        TEST_ERROR;
+    
+    if ( 0 != cl_lexer_test_verify_token(token_ptr, token_num++, H5CL_EOS_TOK, "", 0, 0.0, NULL, 0, true) )
+        TEST_ERROR;
+
+
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        TEST_ERROR;
+
+    if ( ( H5CL_INVALID_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL != lex_vars.input_str_ptr ) ||
+         ( H5CL_INVALID_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( NULL != lex_vars.token.str_ptr ) ||
+         ( NULL != lex_vars.token.bb_ptr ) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_lexer_detail_check() */
+
+
+/*******************************************************************************
+ *
+ * cl_lexer_error_check_1()
+ *
+ * Verify that the lexer detects and reports errors as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_lexer_error_check_1(void)
+{
+    const char * input_string = "* /* a comment */&/*another comment */    _=% {}[]\"unterminated string";
+    bool verbose = true;
+    H5CL_token_t * token_ptr;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language Lexer error detection & reporting 1");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '*' */
+    if  ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Illagal char '*' in input string.  Context: * /* a comment */&/*another co...", 
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '&' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Illagal char '&' in input string.  Context: ...* a comment */&/*another comme...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '_' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char '_' in input string.  Context: ...comment */    _=% {}[]\"untermi...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '=' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char '=' in input string.  Context: ...omment */    _=% {}[]\"untermin...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '%' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Percent sign in input string.  Context: ...mment */    _=% {}[]\"untermina...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '{' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char '{' in input string.  Context: ...ent */    _=% {}[]\"unterminate...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '}' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char '}' in input string.  Context: ...nt */    _=% {}[]\"unterminated...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char '[' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char '[' in input string.  Context: ...t */    _=% {}[]\"unterminated ...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on illegal char ']' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Illagal char ']' in input string.  Context: ... */    _=% {}[]\"unterminated s...",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an unterminated string' */
+    if ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Un-terminate quote string in input string.  Context: ...rminated string",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_lexer_error_check_1() */
+
+
+/*******************************************************************************
+ *
+ * cl_lexer_error_check_2()
+ *
+ * Verify that the lexer detects and reports errors as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_lexer_error_check_2(void)
+{
+    const char * input_string = "/* malformed numeric values */ + - . +. -. (an unterminated list";
+    bool verbose = true;
+    H5CL_token_t * token_ptr;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language Lexer error detection & reporting 2");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an ill formed numeric constantt */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Ill-formed numerical constant.  Context: ...eric values */ + - . +. -. (an...",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an ill formed numeric constantt */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Ill-formed numerical constant.  Context: ...ic values */ + - . +. -. (an u...",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an ill formed numeric constantt */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Ill-formed numerical constant.  Context: ... values */ + - . +. -. (an unt...",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an ill formed numeric constantt */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Ill-formed numerical constant.  Context: ...alues */ + - . +. -. (an unter...",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an ill formed numeric constantt */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Ill-formed numerical constant.  Context: ...es */ + - . +. -. (an untermin...",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on na unterminate list */
+    if  ( H5CL__lex_read_token(true, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Un-terminated list in input string.  Context: ...terminated list",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_lexer_error_check_2() */
+
+
+/*******************************************************************************
+ *
+ * cl_lexer_error_check_3()
+ *
+ * Verify that the lexer detects and reports errors as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_lexer_error_check_3(void)
+{
+    const char * input_string = " /* an empty input string to generate an unexpected EOI error */";
+    bool verbose = true;
+    H5CL_token_t * token_ptr;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language Lexer error detection & reporting 3");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an un enxpected end of input string error */
+    if  ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Un-expected end of input string.  Context: ...ed EOI error */",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_lexer_error_check_3() */
+
+
+/*******************************************************************************
+ *
+ * cl_lexer_error_check_4()
+ *
+ * Verify that the lexer detects and reports errors as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_lexer_error_check_4(void)
+{
+    const char * input_string = " /* end of input in a comment ";
+    bool verbose = true;
+    H5CL_token_t * token_ptr;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language Lexer error detection & reporting 4");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* should fail on an un enxpected end of input string error */
+    if  ( H5CL__lex_read_token(false, false, &token_ptr, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                               "Un-expected end of input string.  Context: ...t in a comment ",
+                               verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_lexer_error_check_4() */
+
+
+/*******************************************************************************
+ *
  * cl_parse_name_val_pair_smoke_check()
  *
  * Initial set of parse tests designed to verify basic functionality of the 
@@ -490,8 +1439,7 @@ cl_parse_name_val_pair_smoke_check(void)
         /* input_str_ptr     = */ NULL,
         /* next_char_ptr     = */ NULL,
         /* end_of_input      = */ false, 
-        /* line_num          = */ 0,
-        /* char_num          = */ 0, 
+        /* err_ctx           = */ "",
         /* token             = */ {
         /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
         /* token.code        = */    H5CL_ERROR_TOK,
@@ -535,7 +1483,7 @@ cl_parse_name_val_pair_smoke_check(void)
 
         nv_pairs[nv_pair_num].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(nv_pairs[nv_pair_num])) < 0 )
+        if ( H5CL_init_nv_pair(&(nv_pairs[nv_pair_num])) < 0 )
             TEST_ERROR;
     }
 
@@ -578,7 +1526,7 @@ cl_parse_name_val_pair_smoke_check(void)
     /* take down the array of instance of cl_nv_pair_t */
     for ( nv_pair_num = 0; nv_pair_num < 5; nv_pair_num++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(nv_pairs[nv_pair_num])) < 0 ) 
+        if ( H5CL_take_down_nv_pair(&(nv_pairs[nv_pair_num])) < 0 ) 
             TEST_ERROR;
     }
 
@@ -605,6 +1553,662 @@ error:
     return -1;
 
 } /* cl_parse_name_val_pair_smoke_check() */
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_1()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_1(void)
+{
+    const char * input_string = "name 1 ) /* NV pair missing the opening paren */";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 1");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on a missing initial paren */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+            "Syntax error -- Initial '(' of name value pair expected.  Context: name 1 ) /* NV pair missing th...",
+            verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_1() */
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_2()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_2(void)
+{
+    const char * input_string = "( /* NV pair missing the name */ 1 --01020304 )";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 2");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on a missing name in the name value pair */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                    "Syntax error -- name of name value pair expected.  Context: ...g the name */ 1 --01020304 )",
+                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_2() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_3()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_3(void)
+{
+    const char * input_string = "( name /* NV pair missing the value */ )";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 3");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on a missing value in the name value pair */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                "Syntax error -- value of name value pair expected.  Context: ... the value */ )",
+                                verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_3() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_4()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_4(void)
+{
+    const char * input_string = "( name 1.1 /* NV pair with extra value */ --01020304 )";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 4");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on an extra value / missting closing paren in the name value pair */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                    "Syntax error -- Terminal ')' of name value pair expected.  Context: ...e */ --01020304 )",
+                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_4() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_5()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_5(void)
+{
+    const char * input_string = "( name \" unterminated quote string ";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 5");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on an unterminated quote string */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Un-terminate quote string in input string.  Context: ...d quote string ",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_5() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_6()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_6(void)
+{
+    const char * input_string = "( name ( unterminated list ";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 6");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on an unterminated list */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Un-terminated list in input string.  Context: ...erminated list ",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_6() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_nv_pair_error_check_7()
+ *
+ * Verify that the name value pair parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              JRM -- 1/8/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_nv_pair_error_check_7(void)
+{
+    const char * input_string = "( name 3.14159 /* unexpected EOI */ ";
+    bool verbose = true;
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+    H5CL_nv_pair_t nv_pair;
+
+    TESTING("VFD Configuration Language NV pair err detection & reporting 7");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) {
+
+        TEST_ERROR;
+    }
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    nv_pair.struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+    if ( H5CL_init_nv_pair(&nv_pair) < 0 )
+        TEST_ERROR;
+
+    /* should fail on an unterminated list */
+    if ( H5CL__parse_name_value_pair(&nv_pair, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Un-expected end of input string.  Context: ...xpected EOI */ ",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_nv_pair_error_check_7() */
 
 
 /*******************************************************************************
@@ -692,8 +2296,7 @@ cl_parse_name_val_pair_list_smoke_check(void)
         /* input_str_ptr     = */ NULL,
         /* next_char_ptr     = */ NULL,
         /* end_of_input      = */ false, 
-        /* line_num          = */ 0,
-        /* char_num          = */ 0, 
+        /* err_ctx           = */ "",
         /* token             = */ {
         /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
         /* token.code        = */    H5CL_ERROR_TOK,
@@ -737,7 +2340,7 @@ cl_parse_name_val_pair_list_smoke_check(void)
 
         actual_nv_pairs[nv_pair_num].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
             TEST_ERROR;
     }
 
@@ -755,7 +2358,7 @@ cl_parse_name_val_pair_list_smoke_check(void)
 
     for ( nv_pair_num = 0; nv_pair_num < 5; nv_pair_num++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
             TEST_ERROR;
     }
 
@@ -781,6 +2384,344 @@ error:
     return -1;
 
 } /* cl_parse_name_val_pair_list_smoke_check() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_name_val_pair_list_err_check_1()
+ *
+ * Name value pair errer detection and reporting test.
+ *
+ *                                              JRM -- 12/20/25
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_name_val_pair_list_err_check_1(void)
+{
+    bool verbose = true;
+    int nv_pair_num = 0;
+    const char * input_string = " ( name_0 1 ) ( name_1 3.14159 ) ( name_2 \"Hello World\" ) "
+                                "( name_3 --10111213 ) ( name_4 ( sec2 () ) ) )";
+    H5CL_nv_pair_t actual_nv_pairs[5];
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language NV Pair List err detect & report 1");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) 
+        TEST_ERROR;
+
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* initialize the array of instance of cl_nv_pair_t */
+    for ( nv_pair_num = 0; nv_pair_num < 5; nv_pair_num++ ) {
+
+        actual_nv_pairs[nv_pair_num].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
+            TEST_ERROR;
+    }
+
+    /* missing initial left paren -- should fail with either left or right parent expected */
+    if ( H5CL__parse_name_value_pair_list(actual_nv_pairs, 5, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Syntax error -- Terminal \')\' of name value pair list or leading \'(\' "
+                                        "of name value pair expected.  Context:  ( name_0 1 ) ( name_1 3.14159...",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        TEST_ERROR;
+
+    if ( ( H5CL_INVALID_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL != lex_vars.input_str_ptr ) ||
+         ( H5CL_INVALID_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( NULL != lex_vars.token.str_ptr ) ||
+         ( NULL != lex_vars.token.bb_ptr ) ) {
+
+        TEST_ERROR;
+    }
+
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_name_val_pair_list_err_check_1() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_name_val_pair_list_err_check_2()
+ *
+ * Name value pair errer detection and reporting test.
+ *
+ *                                              JRM -- 12/20/25
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_name_val_pair_list_err_check_2(void)
+{
+    bool verbose = true;
+    int nv_pair_num = 0;
+    const char * input_string = "  name_0 1 ) ( name_1 3.14159 ) ( name_2 \"Hello World\" ) "
+                                "( name_3 --10111213 ) ( name_4 ( sec2 () ) ) )";
+    H5CL_nv_pair_t actual_nv_pairs[5];
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language NV Pair List err detect & report 2");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) 
+        TEST_ERROR;
+
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* initialize the array of instance of cl_nv_pair_t */
+    for ( nv_pair_num = 0; nv_pair_num < 5; nv_pair_num++ ) {
+
+        actual_nv_pairs[nv_pair_num].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
+            TEST_ERROR;
+    }
+
+    /* missing initial left paren -- should fail with either left or right parent expected */
+    if ( H5CL__parse_name_value_pair_list(actual_nv_pairs, 5, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Syntax error -- Initial \'(\' of name value pair list expected.  "
+                                        "Context:   name_0 1 ) ( name_1 3.14159 ...",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        TEST_ERROR;
+
+    if ( ( H5CL_INVALID_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL != lex_vars.input_str_ptr ) ||
+         ( H5CL_INVALID_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( NULL != lex_vars.token.str_ptr ) ||
+         ( NULL != lex_vars.token.bb_ptr ) ) {
+
+        TEST_ERROR;
+    }
+
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_name_val_pair_list_err_check_2() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_name_val_pair_list_err_check_3()
+ *
+ * Name value pair errer detection and reporting test.
+ *
+ *                                              JRM -- 12/20/25
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+static herr_t
+cl_parse_name_val_pair_list_err_check_3(void)
+{
+    bool verbose = true;
+    int nv_pair_num = 0;
+    const char * input_string = "( ( name_3 --10111213- ) ( name_4 ( sec2 () ) ) )";
+    H5CL_nv_pair_t actual_nv_pairs[5];
+    H5CL_lex_vars_t lex_vars = {
+        /* struct_tag        = */ H5CL_LEX_VARS_STRUCT_TAG,
+        /* input_str_ptr     = */ NULL,
+        /* next_char_ptr     = */ NULL,
+        /* end_of_input      = */ false, 
+        /* err_ctx           = */ "",
+        /* token             = */ {
+        /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
+        /* token.code        = */    H5CL_ERROR_TOK,
+        /* token.str_ptr     = */    NULL,
+        /* token.str_len     = */    0,
+        /* token.max_str_len = */    0,
+        /* token.int_val     = */    1,    /* should be overwritten on init */
+        /* token.f_val       = */    1.0,  /* should be overwritten on init */
+        /* token.bb_ptr      = */    NULL,
+        /* token.bb_len      = */    0
+        /* end of token        */ }
+    };
+
+    TESTING("VFD Configuration Language NV Pair List err detect & report 3");
+
+    if ( H5CL__init_lex_vars(input_string, &lex_vars) < 0 ) 
+        TEST_ERROR;
+
+
+    if ( ( H5CL_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL == lex_vars.input_str_ptr ) ||
+         ( input_string == lex_vars.input_str_ptr ) ||
+         ( 0 != strcmp(input_string, lex_vars.input_str_ptr) ) ||
+         ( lex_vars.input_str_ptr != lex_vars.next_char_ptr ) || 
+         ( H5CL_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( H5CL_ERROR_TOK != lex_vars.token.code ) ||
+         ( NULL == lex_vars.token.str_ptr ) ||
+         ( 0 != lex_vars.token.str_len ) ||
+         ( strlen(input_string) != lex_vars.token.max_str_len ) ||
+         ( 0 != lex_vars.token.int_val ) ||
+         ( 0.0 < lex_vars.token.f_val ) ||    /* circumlocution to keep */
+         ( 0.0 > lex_vars.token.f_val ) ||    /* the compier happy      */
+         ( NULL == lex_vars.token.bb_ptr ) ||
+         ( 0 != lex_vars.token.bb_len ) ) {
+
+        TEST_ERROR;
+    }
+
+    /* initialize the array of instance of cl_nv_pair_t */
+    for ( nv_pair_num = 0; nv_pair_num < 5; nv_pair_num++ ) {
+
+        actual_nv_pairs[nv_pair_num].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs[nv_pair_num])) < 0 )
+            TEST_ERROR;
+    }
+
+    /* missing initial left paren -- should fail with either left or right parent expected */
+    if ( H5CL__parse_name_value_pair_list(actual_nv_pairs, 5, &lex_vars) >= 0 ) {
+
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                        "Ill-formed numerical constant.  "
+                                        "Context: ...me_3 --10111213- ) ( name_4 ( ...",
+                                        verbose) ) {
+
+        TEST_ERROR;
+    }
+
+
+    if ( H5CL__take_down_lex_vars(&lex_vars) < 0 )
+        TEST_ERROR;
+
+    if ( ( H5CL_INVALID_LEX_VARS_STRUCT_TAG != lex_vars.struct_tag ) ||
+         ( NULL != lex_vars.input_str_ptr ) ||
+         ( H5CL_INVALID_TOKEN_STRUCT_TAG != lex_vars.token.struct_tag ) ||
+         ( NULL != lex_vars.token.str_ptr ) ||
+         ( NULL != lex_vars.token.bb_ptr ) ) {
+
+        TEST_ERROR;
+    }
+
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_name_val_pair_list_err_check_3() */
 
 
 /*******************************************************************************
@@ -1081,8 +3022,7 @@ cl_parser_smoke_check(void)
         /* input_str_ptr     = */ NULL,
         /* next_char_ptr     = */ NULL,
         /* end_of_input      = */ false, 
-        /* line_num          = */ 0,
-        /* char_num          = */ 0, 
+        /* err_ctx           = */ "",
         /* token             = */ {
         /* token.struct_tag  = */    H5CL_TOKEN_STRUCT_TAG,
         /* token.code        = */    H5CL_ERROR_TOK,
@@ -1109,7 +3049,7 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_0[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_0[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_0[i])) < 0 )
             TEST_ERROR;
 
     }
@@ -1127,7 +3067,7 @@ cl_parser_smoke_check(void)
 
     for ( i = 0; i < num_nv_pairs_0; i++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs_0[0])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs_0[0])) < 0 )
             TEST_ERROR;
     }
 
@@ -1146,7 +3086,7 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_1[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_1[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_1[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1163,7 +3103,7 @@ cl_parser_smoke_check(void)
 
     for ( i = 0; i < num_nv_pairs_1; i++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs_1[i])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs_1[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1182,7 +3122,7 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_2[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_2[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_2[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1198,7 +3138,7 @@ cl_parser_smoke_check(void)
 
     for ( i = 0; i < num_nv_pairs_2; i++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs_2[i])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs_2[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1217,7 +3157,7 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_3[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_3[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_3[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1233,7 +3173,7 @@ cl_parser_smoke_check(void)
 
     for ( i = 0; i < num_nv_pairs_3; i++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs_3[i])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs_3[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1252,7 +3192,7 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_4[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_4[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_4[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1268,7 +3208,7 @@ cl_parser_smoke_check(void)
 
     for ( i = 0; i < num_nv_pairs_4; i++ ) {
 
-        if ( H5CL__take_down_nv_pair(&(actual_nv_pairs_4[i])) < 0 )
+        if ( H5CL_take_down_nv_pair(&(actual_nv_pairs_4[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1287,12 +3227,12 @@ cl_parser_smoke_check(void)
 
         actual_nv_pairs_5[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(actual_nv_pairs_5[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(actual_nv_pairs_5[i])) < 0 )
             TEST_ERROR;
 
         expected_nv_pairs_5[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
 
-        if ( H5CL__init_nv_pair(&(expected_nv_pairs_5[i])) < 0 )
+        if ( H5CL_init_nv_pair(&(expected_nv_pairs_5[i])) < 0 )
             TEST_ERROR;
     }
 
@@ -1338,8 +3278,23 @@ main(void)
     printf("Testing Virtual File Driver Configuration Language functionality.\n");
 
     nerrors += cl_lexer_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_lexer_detail_check() < 0 ? 1 : 0;
+    nerrors += cl_lexer_error_check_1() < 0 ? 1 : 0;
+    nerrors += cl_lexer_error_check_2() < 0 ? 1 : 0;
+    nerrors += cl_lexer_error_check_3() < 0 ? 1 : 0;
+    nerrors += cl_lexer_error_check_4() < 0 ? 1 : 0;
     nerrors += cl_parse_name_val_pair_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_1() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_2() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_3() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_4() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_5() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_6() < 0 ? 1 : 0;
+    nerrors += cl_parse_nv_pair_error_check_7() < 0 ? 1 : 0;
     nerrors += cl_parse_name_val_pair_list_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_parse_name_val_pair_list_err_check_1() < 0 ? 1 : 0;
+    nerrors += cl_parse_name_val_pair_list_err_check_2() < 0 ? 1 : 0;
+    nerrors += cl_parse_name_val_pair_list_err_check_3() < 0 ? 1 : 0;
     nerrors += cl_parser_smoke_check() < 0 ? 1 : 0;
 
     if (nerrors) {

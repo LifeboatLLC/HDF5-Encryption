@@ -47,7 +47,7 @@
  *
  * struct H5CL_nv_pair_t
  *
- * The structure used to store the name and value from a successfully parse
+ * The structure used to store the name and value from a successfully parsed
  * name value pair.
  *
  * The fields in the structure are discussed individually below.
@@ -86,18 +86,18 @@
  *                      The length of this vector is stored in the len field.
  *
  *              H5CL_VAL_LIST: The value associated with the name value
- *                      pair is a configuration languation sub expression
+ *                      pair is a configuration language sub expression
  *                      most likely containing configuration data for
  *                      underlying VFD(s).  It is stored as a string in
  *                      a dynamically allocated vector of char.  The
  *                      length of the sub expression (less the terminating
  *                      null char) is stored in the len field.
  *
- * int_val:     uint64_t containing the integer value assocated with the
+ * int_val:     int64_t containing the integer value associated with the
  *              name value pair if val_type == H5CL_VAL_INT.  In all other
  *              cases, int_val should be set to 0.
  *
- * f_val:       double containing the floating point value assocated with
+ * f_val:       double containing the floating point value associated with
  *              the name value pair if val_type == H5CL_VAL_FLOAT.  In all
  *              other cases, f_val should be set to 0.0.
  *
