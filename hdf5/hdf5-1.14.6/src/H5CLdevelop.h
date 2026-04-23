@@ -151,6 +151,57 @@ typedef struct H5CL_nv_pair_t
 } H5CL_nv_pair_t;
              
 
+/*******************************************************************************
+ *
+ * struct H5CL_config_spec
+ *
+ * Arrays of instances of H5CL_config_spec are used to pass arrays of instances
+ * of H5CL_nv_pair_t and the assoicated configuration names and max number of 
+ * parameters into H5CL_parse_config_group(). 
+ *
+ * The fields in the structure are discussed individually below. 
+ *
+ * struct_tag:  unsigned integer which must always contain the the value
+ *      H5CL_CONFIG_SPEC_STRUCT_TAG.  The struct_tag field allows us to
+ *      verify that a pointer to struct H5CL_config_spec does in fact
+ *      point to an instance of same.
+ *
+ * config_name: Pointer to a string containing the name of the target 
+ *      configuration.
+ *
+ * max_num_params: Integer field containing the length of the array of 
+ *      instances of H5CL_nv_pair_t pointed to by nv_pairs (below).  Note
+ *      that this value must be greater than or equal to the maximum 
+ *      number of parameters that may appear in the targer configuration.
+ * 
+ * nv_pairs: Base address of the array of H5CL_nv_pair_t prepared to receive
+ *      the name value pairs in the configuration as they are parsed.  Note
+ *      that the tag field of each entry in this array must be set to 
+ *      H5CL_NV_PAIR_STRUCT_TAG on entry.
+ *
+ * parsed: Boolean flag used to track whether the indication configuration 
+ *      has been parsed and its name value pairs have been loaded into 
+ *      the array of H5CL_nv_pair_t pointed to by the nv_pairs field above.
+ *
+ *******************************************************************************/
+
+#define H5CL_CONFIG_SPEC_STRUCT_TAG  0x008A
+
+typedef struct H5CL_config_spec
+{
+    unsigned         struct_tag;
+
+    char *           config_name;
+
+    int              max_num_params;
+
+    H5CL_nv_pair_t * nv_pairs;
+
+    bool             parsed;
+
+} H5CL_config_spec;
+
+
 /********************/
 /* Public Variables */
 /********************/

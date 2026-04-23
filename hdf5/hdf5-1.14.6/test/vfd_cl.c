@@ -50,7 +50,8 @@ static herr_t cl_parse_name_val_pair_list_smoke_check(void);
 static herr_t cl_parse_name_val_pair_list_err_check_1(void);
 static herr_t cl_parse_name_val_pair_list_err_check_2(void);
 static herr_t cl_parse_name_val_pair_list_err_check_3(void);
-herr_t cl_parser_smoke_check(void);
+static herr_t cl_parser_smoke_check(void);
+static herr_t cl_parse_config_group_smoke_check(void);
 
 
 /*******************************************************************************
@@ -3259,6 +3260,1116 @@ error:
 } /* cl_parser_smoke_check() */
 
 
+/*******************************************************************************
+ *
+ * cl_parse_config_group_smoke_check()
+ *
+ * Initial smoke check for the H5CL_parse_config_group() function.  Note that
+ * this test does not trigger any errors in that function
+ *
+ *                                              JRM -- 4/7/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+herr_t
+cl_parse_config_group_smoke_check(void)
+{
+    const char * input_string = 
+        "( vfd_swmr_config_data "
+        "  ("
+        "    ( H5F_vfd_swmr_config"
+        "      ("
+        "        ( version 1 )"
+        "        ( tick_len 4 )"
+        "        ( max_lag 7 )"
+        "        ( presume_posix_semantics 1 )"
+        "        ( maintain_metadata_file 1 )"
+        "        ( generate_updater_files 0 )"
+        "        ( flush_raw_data 1 )"
+        "        ( md_pages_reserved 128 )"
+        "        ( md_file_path \"/a/path/\" )"
+        "        ( md_file_name \"md_file\" )"
+        "        ( updater_file_path \"\" )"
+        "        ( log_file_path \"\" )"
+        "        ( pb_expansion_threshold 0 ) "
+        "      )"
+        "    )"
+        "    ( page_buffer_config "
+        "      ("
+        "        ( page_buf_size 409600 )"
+        "        ( metadata_pages_only 1 )"
+        "      )"
+        "    )"
+        "    ( file_space_strategy_config "
+        "      ("
+        "        ( persist 0 )"
+        "      )"
+        "    )"
+        "    ( file_space_page_size "
+        "      ("
+        "        ( page_size 4096 )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+    int i;
+    char vfd_swmr_config_data[] = "vfd_swmr_config_data";
+    char H5F_vfd_swmr_config[] = "H5F_vfd_swmr_config";
+    char page_buffer_config[] = "page_buffer_config";
+    char file_space_strategy_config[] = "file_space_strategy_config";
+    char file_space_page_size[] = "file_space_page_size";
+    H5CL_config_spec configs[4] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ H5F_vfd_swmr_config,
+        /* max_num_params = */ 13,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ page_buffer_config,
+        /* max_num_params = */ 2,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ file_space_strategy_config,
+        /* max_num_params = */ 1,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ file_space_page_size,
+        /* max_num_params = */ 1,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+    char version[] = "version";
+    char tick_len[] = "tick_len";
+    char max_lag[] = "max_lag";
+    char presume_posix_semantics[] = "presume_posix_semantics";
+    char maintain_metadata_file[] = "maintain_metadata_file";
+    char generate_updater_files[] = "generate_updater_files";
+    char flush_raw_data[] = "flush_raw_data";
+    char md_pages_reserved[] = "md_pages_reserved";
+    char md_file_path[] = "md_file_path";
+    char md_file_path_str[] = "/a/path/";
+    char md_file_name[] = "md_file_name";
+    char md_file_name_str[] = "md_file";
+    char updater_file_path[] = "updater_file_path";
+    char updater_file_path_str[] = "";
+    char log_file_path[] = "log_file_path";
+    char log_file_path_str[] = "";
+    char pb_expansion_threshold[] = "pb_expansion_threshold";
+    char page_buf_size[] = "page_buf_size";
+    char metadata_pages_only[] = "metadata_pages_only";
+    char persist[] = "persist";
+    char page_size[] = "page_size";
+    int num_vfd_swmr_config_nv_pairs = 13;
+    int num_page_buffer_config_nv_pairs = 2;
+    int num_file_space_strategy_nv_pairs = 1;
+    int num_file_space_page_size_nv_pairs = 1;
+    H5CL_nv_pair_t actual_vfd_swmr_config_nv_pairs[13];
+    H5CL_nv_pair_t actual_page_buffer_config_nv_pairs[2];
+    H5CL_nv_pair_t actual_file_space_strategy_nv_pairs[1];
+    H5CL_nv_pair_t actual_file_space_page_size_nv_pairs[1];
+    H5CL_nv_pair_t expected_vfd_swmr_config_nv_pairs[13] =
+    { 
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ version,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 1,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ tick_len,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 4,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ max_lag,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 7,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ presume_posix_semantics,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 1,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ maintain_metadata_file,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 1,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ generate_updater_files,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ flush_raw_data,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 1,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ md_pages_reserved,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 128,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ md_file_path,
+            /* val_type     = */ H5CL_VAL_QSTR,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ md_file_path_str,
+            /* len          = */ 8 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ md_file_name,
+            /* val_type     = */ H5CL_VAL_QSTR,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ md_file_name_str,
+            /* len          = */ 7 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ updater_file_path,
+            /* val_type     = */ H5CL_VAL_QSTR,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ updater_file_path_str,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ log_file_path,
+            /* val_type     = */ H5CL_VAL_QSTR,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ log_file_path_str,
+            /* len          = */ 0 
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ pb_expansion_threshold,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0 
+        }
+    };
+    H5CL_nv_pair_t expected_page_buffer_config_nv_pairs[2] =
+    { 
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ page_buf_size,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 409600,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0
+        },
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ metadata_pages_only,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 1,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0
+        }
+    };
+    H5CL_nv_pair_t expected_file_space_strategy_nv_pairs[1] =
+    { 
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ persist,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 0,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0
+        }
+    };
+    H5CL_nv_pair_t expected_file_space_page_size_nv_pairs[1] =
+    { 
+        {
+            /* struct_tag   = */ H5CL_NV_PAIR_STRUCT_TAG,
+            /* name_ptr     = */ page_size,
+            /* val_type     = */ H5CL_VAL_INT,
+            /* int_val      = */ 4096,
+            /* f_val        = */ 0.0,
+            /* vlen_val_ptr = */ NULL,
+            /* len          = */ 0
+        }
+    };
+
+    TESTING("H5CL_parse_config_group() -- Initial Smoke Check");
+
+    /* setup the name value pair arrays */
+
+    for ( i = 0; i < num_vfd_swmr_config_nv_pairs; i++ ) {
+
+        actual_vfd_swmr_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < num_page_buffer_config_nv_pairs; i++ ) {
+
+        actual_page_buffer_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < num_file_space_strategy_nv_pairs; i++ ) {
+
+        actual_file_space_strategy_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < num_file_space_page_size_nv_pairs; i++ ) {
+
+        actual_file_space_page_size_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+
+    configs[0].nv_pairs = &(actual_vfd_swmr_config_nv_pairs[0]);
+    configs[1].nv_pairs = &(actual_page_buffer_config_nv_pairs[0]);
+    configs[2].nv_pairs = &(actual_file_space_strategy_nv_pairs[0]);
+    configs[3].nv_pairs = &(actual_file_space_page_size_nv_pairs[0]);
+
+
+    /* parse the configuration group */
+
+    if ( H5CL_parse_config_group(input_string, vfd_swmr_config_data, 4, configs) < 0 )
+        TEST_ERROR;
+
+
+    /* Verify the resulting arrays of name value pairs */
+
+    if ( 0 != cl_test_verify_nv_pairs(actual_vfd_swmr_config_nv_pairs, 
+                                      expected_vfd_swmr_config_nv_pairs, 
+                                      num_vfd_swmr_config_nv_pairs, true) )
+        TEST_ERROR;
+
+    if ( 0 != cl_test_verify_nv_pairs(actual_page_buffer_config_nv_pairs, 
+                                      expected_page_buffer_config_nv_pairs, 
+                                      num_page_buffer_config_nv_pairs, true) )
+        TEST_ERROR;
+
+    if ( 0 != cl_test_verify_nv_pairs(actual_file_space_strategy_nv_pairs, 
+                                      expected_file_space_strategy_nv_pairs, 
+                                      num_file_space_strategy_nv_pairs, true) )
+        TEST_ERROR;
+
+    if ( 0 != cl_test_verify_nv_pairs(actual_file_space_page_size_nv_pairs, 
+                                      expected_file_space_page_size_nv_pairs, 
+                                      num_file_space_page_size_nv_pairs, true) )
+        TEST_ERROR;
+
+
+    /* cleanup after test.  Don't take down the expected name value pair arrays since all strings
+     * are either constant or allocated on the stack.
+     */
+
+    for ( i = 0; i < num_vfd_swmr_config_nv_pairs; i++ ) {
+
+        if ( H5CL_take_down_nv_pair(&(actual_vfd_swmr_config_nv_pairs[i])) < 0 )
+            TEST_ERROR;
+    }
+
+    for ( i = 0; i < num_page_buffer_config_nv_pairs; i++ ) {
+
+        if ( H5CL_take_down_nv_pair(&(actual_page_buffer_config_nv_pairs[i])) < 0 )
+            TEST_ERROR;
+    }
+
+    for ( i = 0; i < num_file_space_strategy_nv_pairs; i++ ) {
+
+        if ( H5CL_take_down_nv_pair(&(actual_file_space_strategy_nv_pairs[i])) < 0 )
+            TEST_ERROR;
+    }
+
+    for ( i = 0; i < num_file_space_page_size_nv_pairs; i++ ) {
+
+        if ( H5CL_take_down_nv_pair(&(actual_file_space_page_size_nv_pairs[i])) < 0 )
+            TEST_ERROR;
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+
+} /* cl_parse_config_group_smoke_check() */
+
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_1()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/17/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_1(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( duplicate_name"
+        "      ("
+        "        ( param_1 1 )"
+        "      )"
+        "    )"
+        "    ( normal_name "
+        "      ("
+        "        ( param_2 2 )"
+        "      )"
+        "    )"
+        "    ( duplicate_name "
+        "      ("
+        "        ( param_3 3 )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+    int i;
+    int j;
+    int num_config_groups = 3;
+    int duplicate_1_num_params = 1;
+    int normal_num_params = 1;
+    int duplicate_2_num_params = 1;
+    bool verbose = true;
+    char top_name[] = "top_name";
+    char duplicate_name[] = "duplicate_name";
+    char normal_name[] = "normal_name";
+    H5CL_config_spec configs[3] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ duplicate_name,
+        /* max_num_params = */ duplicate_1_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ normal_name,
+        /* max_num_params = */ normal_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ duplicate_name,
+        /* max_num_params = */ duplicate_2_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+
+    H5CL_nv_pair_t duplicate_1_config_nv_pairs[1];
+    H5CL_nv_pair_t normal_config_nv_pairs[1];
+    H5CL_nv_pair_t duplicate_2_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 1");
+
+    /* setup the name value pair arrays */
+
+    for ( i = 0; i < duplicate_1_num_params; i++ ) {
+
+        duplicate_1_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < duplicate_1_num_params; i++ ) {
+
+        normal_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < duplicate_2_num_params; i++ ) {
+
+        duplicate_2_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(duplicate_1_config_nv_pairs[0]);
+    configs[1].nv_pairs = &(normal_config_nv_pairs[0]);
+    configs[2].nv_pairs = &(duplicate_2_config_nv_pairs[0]);
+
+    /* Should fail from duplicate config name */
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+        TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "Duplicate config name.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_2()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/20/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_2(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( group_1 "
+        "      ("
+        "        ( param_1 1 )"
+        "      )"
+        "    )"
+        "   ( group_2 "
+        "     ("
+        "       (param_2 2)"
+        "     )"
+        "   )"
+        "  )"
+        ")";
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 2;
+    int group_1_num_params = 1;
+    int group_2_num_params = 1;
+    char top_name[] = "top_name";
+    char group_1_name[] = "group_1";
+    char group_2_name[] = "group_2";
+    H5CL_config_spec configs[2] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_1_name,
+        /* max_num_params = */ group_1_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_2_name,
+        /* max_num_params = */ group_2_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+
+    H5CL_nv_pair_t group_1_config_nv_pairs[1];
+    H5CL_nv_pair_t group_2_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 2");
+
+    /* setup the name value pair arrays. */
+
+    for ( i = 0; i < group_1_num_params; i++ ) {
+
+        group_1_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < group_2_num_params; i++ ) {
+
+        group_2_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(group_1_config_nv_pairs[0]);
+    configs[1].nv_pairs = &(group_2_config_nv_pairs[0]);
+
+    /* Purposely pass num_configs value that is less than required */
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups - 1, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "max number of name value pairs exceeded.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_3()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/20/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_3(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( group_name "
+        "      ("
+        "        ( param_1 1 )"
+        "        ( param_2 2 )"
+        "        ( param_3 3 )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 1;
+    int group_num_params = 3;
+    char top_name[] = "top_name";
+    char group_name[] = "group_name";
+    H5CL_config_spec configs[1] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_name,
+        /* max_num_params = */ group_num_params - 1,    /* purposely set to less than needed*/
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+
+    H5CL_nv_pair_t group_config_nv_pairs[3];
+
+    TESTING("H5CL_parse_config_group() err detect & report 3");
+
+    /* setup the name value pair arrays */
+    for ( i = 0; i < group_num_params; i++ ) {
+
+        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+        TEST_ERROR;
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "max number of name value pairs exceeded.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+    
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_4()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/21/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_4(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( group_name "
+        "      ("
+        "        ( param 1 )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 1;
+    int group_num_params = 1;
+    char wrong_name[] = "wrong_name";
+    char top_name[] = "top_name";
+    char group_name[] = "group_name";
+    H5CL_config_spec configs[1] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_name,
+        /* max_num_params = */ group_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+    
+    H5CL_nv_pair_t group_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 4");
+
+    /* setup the name value pair array. */
+    for ( i = 0; i < group_num_params; i++ ) {
+
+        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+
+    /* First pass wrong topmost nv_pair name */
+    if ( H5CL_parse_config_group(input_string, wrong_name, num_config_groups, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "config group name mismatch.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* Now set the config group's expected name to wrong_name and retry with the correct top-level name */
+    configs[0].config_name = wrong_name;
+    
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "Unknown config name.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+    
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_5()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/21/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_5(void){
+    const char * input_string = "( top_name 1 )"; /* value isnt a list */
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 1;
+    int group_num_params = 1;
+    char top_name[] = "top_name";
+    char group_name[] = "group_name";
+    H5CL_config_spec configs[1] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_name,
+        /* max_num_params = */ group_num_params,
+        /* nv_pairs       = */ NULL,
+        /* parse          = */ false
+      }
+    };
+
+    H5CL_nv_pair_t group_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 5");
+
+    /* setup the name value pair array. */
+    for ( i = 0; i < group_num_params; i++ ) {
+
+        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "value of the config group level name value pair is not a list.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_6()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/21/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_6(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( group_name 1 )" /* Group value isn't a list */
+        "  )"
+        ")";
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 1;
+    int group_num_params = 1;
+    char top_name[] = "top_name";
+    char group_name[] = "group_name";
+    H5CL_config_spec configs[1] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_name,
+        /* max_num_params = */ 1,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+    
+    H5CL_nv_pair_t group_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 6");
+
+    /* setup the name value pair array. */
+    for ( i = 0; i < group_num_params; i++ ) {
+
+        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "value of a configuration is not a list.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+    
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
+
+/*******************************************************************************
+ *
+ * cl_parse_config_group_err_check_7()
+ *
+ * Verify that the config group parser function detects and reports errors 
+ * as expected.
+ *
+ *                                              Cody S. -- 4/21/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+herr_t
+cl_parse_config_group_err_check_7(void){
+    const char * input_string = 
+        "( top_name "
+        "  ("
+        "    ( group_name "
+        "      ("
+        "        ( param 1 )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+    bool verbose = true;
+    int i;
+    int j;
+    int num_config_groups = 2;
+    int group_1_num_params = 1;
+    int group_2_num_params = 1;
+    char top_name[] = "top_name";
+    char group_1_name[] = "group_1_name";
+    char group_2_name[] = "group_2_name";
+    H5CL_config_spec configs[2] =
+    {
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_1_name,
+        /* max_num_params = */ group_1_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      },
+      {
+        /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
+        /* config_name    = */ group_2_name,
+        /* max_num_params = */ group_2_num_params,
+        /* nv_pairs       = */ NULL, /* will overwrite */
+        /* parse          = */ false
+      }
+    };
+    
+    H5CL_nv_pair_t group_1_config_nv_pairs[1];
+    H5CL_nv_pair_t group_2_config_nv_pairs[1];
+
+    TESTING("H5CL_parse_config_group() err detect & report 7");
+
+    /* setup the name value pair array. */
+    for ( i = 0; i < group_1_num_params; i++ ) {
+
+        group_1_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+    for ( i = 0; i < group_2_num_params; i++ ) {
+
+        group_2_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+    }
+
+
+    /* load pointers to the actual nv pair arrays into configs[] */
+
+    configs[0].nv_pairs = &(group_1_config_nv_pairs[0]);
+    configs[1].nv_pairs = &(group_2_config_nv_pairs[0]);
+    
+    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+       TEST_ERROR;
+
+    } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                    "Unknown config name.",
+                                    verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* cleanup after test. */
+    for ( i = 0; i < num_config_groups; i++ ) {
+
+        for ( j = 0; j < configs[i].max_num_params; j++ ) {
+
+            /* Attempt cleanup only if struct_tag is valid */
+            if ( ( configs[i].nv_pairs[j].struct_tag == H5CL_NV_PAIR_STRUCT_TAG ) &&
+                 ( H5CL_take_down_nv_pair(&configs[i].nv_pairs[j]) < 0 ) ) 
+            {
+                TEST_ERROR;
+            }
+        }
+    }
+    
+    PASSED();
+
+    return 0;
+
+error:
+
+    return -1;
+}
+
 /*-------------------------------------------------------------------------
  * Function:    main
  *
@@ -3296,6 +4407,14 @@ main(void)
     nerrors += cl_parse_name_val_pair_list_err_check_2() < 0 ? 1 : 0;
     nerrors += cl_parse_name_val_pair_list_err_check_3() < 0 ? 1 : 0;
     nerrors += cl_parser_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_1() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_2() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_3() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_4() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_5() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_6() < 0 ? 1 : 0;
+    nerrors += cl_parse_config_group_err_check_7() < 0 ? 1 : 0;
 
     if (nerrors) {
         printf("***** %d Virtual File Driver Configuration Language TEST%s FAILED! *****\n", 
