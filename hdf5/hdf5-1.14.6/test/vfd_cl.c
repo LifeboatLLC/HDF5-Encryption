@@ -52,7 +52,13 @@ static herr_t cl_parse_name_val_pair_list_err_check_2(void);
 static herr_t cl_parse_name_val_pair_list_err_check_3(void);
 static herr_t cl_parser_smoke_check(void);
 static herr_t cl_parse_config_group_smoke_check(void);
-
+static herr_t cl_parse_config_group_err_check_1(void);
+static herr_t cl_parse_config_group_err_check_2(void);
+static herr_t cl_parse_config_group_err_check_3(void);
+static herr_t cl_parse_config_group_err_check_4(void);
+static herr_t cl_parse_config_group_err_check_5(void);
+static herr_t cl_parse_config_group_err_check_6(void);
+static herr_t cl_parse_config_group_err_check_7(void);
 
 /*******************************************************************************
  *
@@ -2740,7 +2746,7 @@ error:
  *
  *******************************************************************************/
 
-herr_t
+static herr_t
 cl_parser_smoke_check(void)
 {
     int i;
@@ -3275,7 +3281,7 @@ error:
  *
  *******************************************************************************/
 
-herr_t
+static herr_t
 cl_parse_config_group_smoke_check(void)
 {
     const char * input_string = 
@@ -3663,7 +3669,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_1(void){
     const char * input_string = 
         "( top_name "
@@ -3796,7 +3802,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_2(void){
     const char * input_string = 
         "( top_name "
@@ -3910,7 +3916,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_3(void){
     const char * input_string = 
         "( top_name "
@@ -4002,7 +4008,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_4(void){
     const char * input_string = 
         "( top_name "
@@ -4108,7 +4114,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_5(void){
     const char * input_string = "( top_name 1 )"; /* value isnt a list */
     bool verbose = true;
@@ -4189,7 +4195,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_6(void){
     const char * input_string = 
         "( top_name "
@@ -4276,7 +4282,7 @@ error:
  *    None.
  *
  *******************************************************************************/
-herr_t
+static herr_t
 cl_parse_config_group_err_check_7(void){
     const char * input_string = 
         "( top_name "
