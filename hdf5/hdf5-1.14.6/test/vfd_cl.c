@@ -3786,7 +3786,7 @@ cl_parse_config_group_err_check_1(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_1() */
 
 /*******************************************************************************
  *
@@ -3879,7 +3879,8 @@ cl_parse_config_group_err_check_2(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    /* Don't try to clean up nv pairs that H5CL_parse_config_group() didn't initialize */
+    for ( i = 0; i < num_config_groups - 1; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -3899,7 +3900,7 @@ cl_parse_config_group_err_check_2(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_2() */
 
 
 /*******************************************************************************
@@ -3991,7 +3992,7 @@ cl_parse_config_group_err_check_3(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_3() */
 
 
 /*******************************************************************************
@@ -4098,7 +4099,7 @@ cl_parse_config_group_err_check_4(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_4() */
 
 /*******************************************************************************
  *
@@ -4179,7 +4180,7 @@ cl_parse_config_group_err_check_5(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_5() */
 
 /*******************************************************************************
  *
@@ -4265,7 +4266,7 @@ cl_parse_config_group_err_check_6(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_6() */
 
 
 /*******************************************************************************
@@ -4374,7 +4375,7 @@ cl_parse_config_group_err_check_7(void){
 error:
 
     return -1;
-}
+} /* cl_parse_config_group_err_check_7() */
 
 /*-------------------------------------------------------------------------
  * Function:    main
