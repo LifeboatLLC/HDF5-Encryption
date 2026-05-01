@@ -611,7 +611,7 @@ done:
 
     FUNC_LEAVE_NOAPI(ret_value)
 
-} /* H5CL_parse_config() */
+} /* H5CL_parse_config_group() */
 
 /*******************************************************************************
  *
@@ -974,20 +974,19 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr)
                         ( '.' == next_char ) ) {
 
                 /* next_char is a graphical char that can appear as the first character 
-                 * of a token in a valid configuration languate string.  Break and return 
+                 * of a token in a valid configuration language string.  Break and return 
                  * next_char.
                  */
                 break;
 
             } else {
 
-                char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
-
                 /* increment lex_vars_ptr->next_char_ptr.  For normal operation,
                  * this serves no purpose, as any error will abort the parse.
                  * However, incrementing next_char_ptr allows us perform multiple 
                  * invalid character error checks on a single input string.
                  */
+
                 lex_vars_ptr->next_char_ptr++;
 
                 /* We have encountered an illegal character.  Construct an 
@@ -996,23 +995,21 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr)
 
                 if ( H5CL__construct_err_ctx(lex_vars_ptr) < 0 ) {
 
-                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
-                             "Ileagal char \'%c\' in input string.  Error constructing context.",
-                             next_char);
-
+                    HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                                "Illegal char \'%c\' in input string.  Error constructing context.",
+                                next_char);
                 } else if ( '%' == next_char ) {
 
-                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
-                             "Percent sign in input string.  Context: %s",
-                             lex_vars_ptr->err_ctx);
+                    HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                                "Percent sign in input string.  Context: %s",
+                                lex_vars_ptr->err_ctx);
                 } else {
 
-                    snprintf(err_str, H5CL_MAX_ERR_MSG_LEN, 
-                             "Illagal char \'%c\' in input string.  Context: %s",
-                             next_char, lex_vars_ptr->err_ctx);
+                    HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                                "Illegal char \'%c\' in input string.  Context: %s",
+                                next_char, lex_vars_ptr->err_ctx);
                 }
 
-                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, err_str);
             }
 
         } /* while */
