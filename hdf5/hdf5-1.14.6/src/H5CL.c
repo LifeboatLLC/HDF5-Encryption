@@ -982,7 +982,7 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr)
                 break;
 
             } else {
-                // char err_str[H5CL_MAX_ERR_MSG_LEN + 1];
+
                 /* increment lex_vars_ptr->next_char_ptr.  For normal operation,
                  * this serves no purpose, as any error will abort the parse.
                  * However, incrementing next_char_ptr allows us perform multiple 
