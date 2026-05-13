@@ -50,5 +50,7 @@ H5_DLL herr_t H5CL_parse_config_group(const char * input_str_ptr, char * config_
 H5_DLL herr_t H5CL_load_vfd_config_str_into_fapl(hid_t fapl_id, char * vfd_config_str_ptr);
 H5_DLL herr_t H5CL_init_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
 H5_DLL herr_t H5CL_take_down_nv_pair(H5CL_nv_pair_t * nv_pair_ptr);
+H5_DLL herr_t H5CL_load_config_string_from_file(const char *file_name, char **cfg_str_ptr_ptr);
+
 
 #endif /* H5CL_private_H */

@@ -20,8 +20,15 @@
 #include "H5CLpkg.h"
 #include "H5Epkg.h"
 
+/* file name for config file tests */
+#define TEST_CONFIG_FILE_NAME        "cl_test_config.txt"
+/* name of directory (non-regular file) for config file tests */
+#define NON_REGULAR_CONFIG_FILE_NAME "non_regular_file_dir"
+
+
 /* utility functions */
-static bool cl_lexer_test_verify_token(H5CL_token_t * token_ptr, int token_num, int32_t expected_code, 
+static herr_t create_config_file(const char* file_name, const char *config_string, size_t len);
+static int cl_lexer_test_verify_token(H5CL_token_t * token_ptr, int token_num, int32_t expected_code, 
                                        const char * expected_str, int64_t expected_int_val, double expected_f_val, 
                                        uint8_t * expected_bb_ptr, size_t expected_bb_len, bool verbose);
 static int cl_test_verify_nv_pair(H5CL_nv_pair_t * nv_pair_ptr, int nv_pair_num, const char * expected_name_ptr, 
@@ -59,6 +66,52 @@ static herr_t cl_parse_config_group_err_check_4(void);
 static herr_t cl_parse_config_group_err_check_5(void);
 static herr_t cl_parse_config_group_err_check_6(void);
 static herr_t cl_parse_config_group_err_check_7(void);
+static herr_t cl_load_string_from_file_smoke_check(void);
+static herr_t cl_load_string_from_file_err_check_1(void);
+static herr_t cl_load_string_from_file_err_check_2(void);
+
+
+/*******************************************************************************
+ *
+ * create_config_file()
+ *
+ * Helper function to create a config file and write the supplied string to it.
+ * Opens the file specified by file_name in truncation mode and
+ * writes len bytes from config_string to the file.
+ *
+ *                                              Cody S. -- 5/11/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+static herr_t 
+create_config_file(const char* file_name, const char *config_string, size_t len)
+{
+    size_t written;
+
+    /* Open the file and truncate if it already exists */
+    FILE *fp = fopen(file_name, "w"); 
+    if ( !fp ) {
+        perror("fopen failed");
+        return -1;
+    }
+
+    written = fwrite(config_string, 1, len, fp);
+    if ( written != len ) {
+        perror("fwrite failed");
+        fclose(fp);
+        return -1;
+    }
+
+    if (fclose(fp) != 0) {
+        perror("fclose failed");
+        return -1;
+    }
+
+    return 0;
+}
 
 /*******************************************************************************
  *
@@ -74,7 +127,7 @@ static herr_t cl_parse_config_group_err_check_7(void);
  *
  *******************************************************************************/
 
-static bool
+static int
 cl_lexer_test_verify_token(H5CL_token_t * token_ptr, int token_num, 
                            int32_t expected_code, const char * expected_str, 
                            int64_t expected_int_val, double expected_f_val, 
@@ -967,7 +1020,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                               "Illagal char '*' in input string.  Context: * /* a comment */&/*another co...", 
+                               "Illegal char '*' in input string.  Context: * /* a comment */&/*another co...", 
                                verbose) ) {
 
         TEST_ERROR;
@@ -979,7 +1032,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                               "Illagal char '&' in input string.  Context: ...* a comment */&/*another comme...",
+                               "Illegal char '&' in input string.  Context: ...* a comment */&/*another comme...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -991,7 +1044,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char '_' in input string.  Context: ...comment */    _=% {}[]\"untermi...",
+                                "Illegal char '_' in input string.  Context: ...comment */    _=% {}[]\"untermi...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -1003,7 +1056,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char '=' in input string.  Context: ...omment */    _=% {}[]\"untermin...",
+                                "Illegal char '=' in input string.  Context: ...omment */    _=% {}[]\"untermin...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -1027,7 +1080,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char '{' in input string.  Context: ...ent */    _=% {}[]\"unterminate...",
+                                "Illegal char '{' in input string.  Context: ...ent */    _=% {}[]\"unterminate...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -1039,7 +1092,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char '}' in input string.  Context: ...nt */    _=% {}[]\"unterminated...",
+                                "Illegal char '}' in input string.  Context: ...nt */    _=% {}[]\"unterminated...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -1051,7 +1104,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char '[' in input string.  Context: ...t */    _=% {}[]\"unterminated ...",
+                                "Illegal char '[' in input string.  Context: ...t */    _=% {}[]\"unterminated ...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -1063,7 +1116,7 @@ cl_lexer_error_check_1(void)
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
-                                "Illagal char ']' in input string.  Context: ... */    _=% {}[]\"unterminated s...",
+                                "Illegal char ']' in input string.  Context: ... */    _=% {}[]\"unterminated s...",
                                 verbose) ) {
 
         TEST_ERROR;
@@ -3795,7 +3848,7 @@ error:
  * Verify that the config group parser function detects and reports errors 
  * as expected.
  *
- *                                              Cody S. -- 4/20/26
+ *                                              Cody S. -- 4/17/26
  *
  * Changes:
  *
@@ -4057,7 +4110,6 @@ cl_parse_config_group_err_check_4(void){
     /* First pass wrong topmost nv_pair name */
     if ( H5CL_parse_config_group(input_string, wrong_name, num_config_groups, configs) >= 0 ) {
        TEST_ERROR;
-
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
                                     "config group name mismatch.",
                                     verbose) ) {
@@ -4216,7 +4268,7 @@ cl_parse_config_group_err_check_6(void){
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
         /* config_name    = */ group_name,
-        /* max_num_params = */ 1,
+        /* max_num_params = */ group_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
@@ -4340,7 +4392,6 @@ cl_parse_config_group_err_check_7(void){
 
 
     /* load pointers to the actual nv pair arrays into configs[] */
-
     configs[0].nv_pairs = &(group_1_config_nv_pairs[0]);
     configs[1].nv_pairs = &(group_2_config_nv_pairs[0]);
     
@@ -4376,6 +4427,283 @@ error:
 
     return -1;
 } /* cl_parse_config_group_err_check_7() */
+
+
+/*******************************************************************************
+ *
+ * cl_load_string_from_file_smoke_check()
+ *
+ * Initial smoke check for the H5CL_load_config_string_from_file() function.  
+ * Note that this test does not trigger any errors in that function
+ *
+ *                                              Cody S. -- 5/10/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+static herr_t
+cl_load_string_from_file_smoke_check(void)
+{
+    const char *expected_file_str = 
+        "( vfd_swmr_config_data\n"
+        "  (\n"
+        "    ( H5F_vfd_swmr_config\n"
+        "      (\n"
+        "        ( version 1 )\n"
+        "        ( tick_len 4 )\n"
+        "        ( max_lag 7 )\n"
+        "        ( presume_posix_semantics 1 )\n"
+        "        ( maintain_metadata_file 1 )\n"
+        "        ( generate_updater_files 0 )\n"
+        "        ( flush_raw_data 1 )\n"
+        "        ( md_pages_reserved 128 )\n"
+        "        ( md_file_path \"./md_dir/\" )\n"
+        "        ( md_file_name \"md_file\" )\n"
+        "        ( updater_file_path \"\" )\n"
+        "        ( log_file_path \"\" )\n"
+        "        ( pb_expansion_threshold 0 )\n"
+        "      )\n"
+        "    )\n"
+        "    ( page_buffer_config\n"
+        "      (\n"
+        "        ( page_buf_size 4096 )\n"
+        "        ( metadata_pages_only 1 )\n"
+        "      )\n"
+        "    )\n"
+        "    ( file_space_strategy_config\n"
+        "      (\n"
+        "        ( persist 0 )\n"
+        "      )\n"
+        "    )\n"
+        "    ( file_space_page_size\n"
+        "      (\n"
+        "        ( page_size 4096 )\n"
+        "      )\n"
+        "    )\n"
+        "  )\n"
+        ")";
+    char       *actual_file_str = NULL;
+
+    TESTING("H5CL_load_config_string_from_file() -- Initial Smoke Check");
+
+    if ( create_config_file(TEST_CONFIG_FILE_NAME, 
+                            expected_file_str, 
+                            strlen(expected_file_str)) < 0 )
+    {
+        TEST_ERROR;
+    }
+    
+    if ( H5CL_load_config_string_from_file(TEST_CONFIG_FILE_NAME, &actual_file_str) < 0 )
+        TEST_ERROR;
+
+    /* Ensure string loaded from file matches expected string */
+    if (0 != strcmp(actual_file_str, expected_file_str) )
+        TEST_ERROR;
+
+    /* Remove the created config file */
+    if ( remove(TEST_CONFIG_FILE_NAME) != 0 ) {
+        perror("Error deleting file");
+    }
+
+    free(actual_file_str);
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    remove(TEST_CONFIG_FILE_NAME);
+
+    if (actual_file_str)
+        free(actual_file_str);
+    
+    return -1;
+} /* cl_load_string_from_file_smoke_check() */
+
+
+/*******************************************************************************
+ *
+ * cl_load_string_from_file_err_check_1()
+ *
+ * Verify that the function for loading config language strings from files 
+ * detects and reports errors as expected. 
+ *
+ *                                              Cody S. -- 5/12/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+static herr_t
+cl_load_string_from_file_err_check_1(void)
+{
+    
+    char       *loaded_str      = NULL;
+    bool        verbose         = true;
+
+    TESTING("H5CL_load_config_string_from_file err detect 1");
+
+    /* FIRST: Test blank file name */
+
+    if ( H5CL_load_config_string_from_file("", &loaded_str) >= 0 ) {
+        TEST_ERROR;
+    }
+    else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                              "file_name cannot be blank",
+                                              verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* SECOND: test a non existing file */
+
+    if ( H5CL_load_config_string_from_file("FILE_THAT_DOES_NOT_EXIST", &loaded_str) >= 0 ) {
+        TEST_ERROR;
+    }   
+    else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                              "could not stat file",
+                                              verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    /* THIRD: test a non regular file */
+
+    if ( mkdir(NON_REGULAR_CONFIG_FILE_NAME, 0700) != 0 ) {
+        perror("mkdir error");
+        TEST_ERROR;
+    }
+    
+    /* use directory name to trip non-regular file check */
+    if ( H5CL_load_config_string_from_file(NON_REGULAR_CONFIG_FILE_NAME, &loaded_str) >= 0 ) {
+        TEST_ERROR;
+    }
+    else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
+                                              "not a regular file",
+                                              verbose) ) {
+
+        TEST_ERROR;
+    }
+
+    if ( rmdir(NON_REGULAR_CONFIG_FILE_NAME) != 0) {
+        perror("rmdir error");
+    }
+
+    free(loaded_str);
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    rmdir(NON_REGULAR_CONFIG_FILE_NAME);
+
+    if (loaded_str)
+        free(loaded_str);
+    
+    return -1;
+} /* cl_load_string_from_file_err_check_1() */
+
+
+/*******************************************************************************
+ *
+ * cl_load_string_from_file_err_check_2()
+ *
+ * Verify that the function for loading config language strings from files 
+ * detects and reports errors as expected. Uses a loop to go through all
+ * testable errors.
+ *
+ *                                              Cody S. -- 5/12/26
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+static herr_t
+cl_load_string_from_file_err_check_2(void)
+{
+    /* Create a struct to make looping through each test easier */
+    typedef struct {
+        const char *config_str;
+        size_t      config_len;
+        const char *expected_err_msg;
+    } invalid_config_test_t;
+
+    /* create an array of structs to hold test info for each test */
+    invalid_config_test_t config_test[3] = {
+        {
+            /* *config_str       = */ "",
+            /*  config_len       = */ 0,
+            /* *expected_err_msg = */ "file is empty",
+        },  
+        {
+            /* *config_str       = */ "( NON_ASCII_VALUE éàöñç )",
+            /*  config_len       = */ strlen("( NON_ASCII_VALUE éàöñç )"),
+            /* *expected_err_msg = */ "invalid character in string from file",
+        },
+        {
+            /* *config_str       = */ "( NUL_BYTE \0 )",
+            /*  config_len       = */ sizeof("( NUL_BYTE \0 )") - 1, /* use sizeof() - 1 for str containing nul */
+            /* *expected_err_msg = */ "NUL byte in file",
+        }
+    };
+    
+    char       *loaded_str      = NULL;
+    bool        verbose         = true;
+    int         i;
+
+    TESTING("H5CL_load_config_string_from_file err detect 2");
+
+    for ( i = 0; i < 3; i++) {
+        if ( create_config_file(TEST_CONFIG_FILE_NAME, 
+                                config_test[i].config_str,
+                                config_test[i].config_len) < 0 )
+        {
+            TEST_ERROR;
+        }
+
+        if ( H5CL_load_config_string_from_file(TEST_CONFIG_FILE_NAME, &loaded_str) >= 0 ) {
+            TEST_ERROR;
+        }   
+        else if ( 0 != cl_test_verify_error_stack(H5E_FILE, H5E_BADFILE, 
+                                                  config_test[i].expected_err_msg,
+                                                  verbose) ) 
+        {
+
+            TEST_ERROR;
+        }
+
+        if (loaded_str) {
+            free(loaded_str);
+            loaded_str = NULL;
+        }
+    }
+
+    /* Remove the created config file */
+    if ( remove(TEST_CONFIG_FILE_NAME) != 0 ) {
+        perror("Error deleting file");
+    }
+
+    PASSED();
+
+    return 0;
+
+error:
+
+    remove(TEST_CONFIG_FILE_NAME);
+
+    if (loaded_str)
+        free(loaded_str);
+    
+    return -1;
+} /* cl_load_string_from_file_err_check_2() */
+
 
 /*-------------------------------------------------------------------------
  * Function:    main
@@ -4422,6 +4750,9 @@ main(void)
     nerrors += cl_parse_config_group_err_check_5() < 0 ? 1 : 0;
     nerrors += cl_parse_config_group_err_check_6() < 0 ? 1 : 0;
     nerrors += cl_parse_config_group_err_check_7() < 0 ? 1 : 0;
+    nerrors += cl_load_string_from_file_smoke_check() < 0 ? 1 : 0;
+    nerrors += cl_load_string_from_file_err_check_1() < 0 ? 1 : 0;
+    nerrors += cl_load_string_from_file_err_check_2() < 0 ? 1 : 0;
 
     if (nerrors) {
         printf("***** %d Virtual File Driver Configuration Language TEST%s FAILED! *****\n", 
