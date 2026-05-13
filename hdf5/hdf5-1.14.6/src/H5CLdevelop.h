@@ -156,7 +156,7 @@ typedef struct H5CL_nv_pair_t
  * struct H5CL_config_spec
  *
  * Arrays of instances of H5CL_config_spec are used to pass arrays of instances
- * of H5CL_nv_pair_t and the assoicated configuration names and max number of 
+ * of H5CL_nv_pair_t and the associated configuration names and max number of 
  * parameters into H5CL_parse_config_group(). 
  *
  * The fields in the structure are discussed individually below. 
@@ -172,7 +172,7 @@ typedef struct H5CL_nv_pair_t
  * max_num_params: Integer field containing the length of the array of 
  *      instances of H5CL_nv_pair_t pointed to by nv_pairs (below).  Note
  *      that this value must be greater than or equal to the maximum 
- *      number of parameters that may appear in the targer configuration.
+ *      number of parameters that may appear in the target configuration.
  * 
  * nv_pairs: Base address of the array of H5CL_nv_pair_t prepared to receive
  *      the name value pairs in the configuration as they are parsed.  Note
