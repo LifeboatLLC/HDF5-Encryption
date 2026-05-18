@@ -3714,7 +3714,9 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
- *
+ * Specifically, test that duplicate configuration names in a 
+ * configuration group will cause errors in H5CL_parse_config_group().
+ * 
  *                                              Cody S. -- 4/17/26
  *
  * Changes:
@@ -3746,7 +3748,7 @@ cl_parse_config_group_err_check_1(void){
         ")";
     int i;
     int j;
-    int num_config_groups = 3;
+    int num_configs = 3;
     int duplicate_1_num_params = 1;
     int normal_num_params = 1;
     int duplicate_2_num_params = 1;
@@ -3808,7 +3810,7 @@ cl_parse_config_group_err_check_1(void){
     configs[2].nv_pairs = &(duplicate_2_config_nv_pairs[0]);
 
     /* Should fail from duplicate config name */
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
         TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -3819,7 +3821,7 @@ cl_parse_config_group_err_check_1(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -3847,7 +3849,9 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
- *
+ * Specifically, test that H5CL_parse_config_group() errors when num_configs 
+ * is too small.
+ * 
  *                                              Cody S. -- 4/17/26
  *
  * Changes:
@@ -3860,12 +3864,12 @@ cl_parse_config_group_err_check_2(void){
     const char * input_string = 
         "( top_name "
         "  ("
-        "    ( group_1 "
+        "    ( config_1 "
         "      ("
         "        ( param_1 1 )"
         "      )"
         "    )"
-        "   ( group_2 "
+        "   ( config_2 "
         "     ("
         "       (param_2 2)"
         "     )"
@@ -3875,53 +3879,53 @@ cl_parse_config_group_err_check_2(void){
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 2;
-    int group_1_num_params = 1;
-    int group_2_num_params = 1;
+    int num_configs = 2;
+    int config_1_num_params = 1;
+    int config_2_num_params = 1;
     char top_name[] = "top_name";
-    char group_1_name[] = "group_1";
-    char group_2_name[] = "group_2";
+    char config_1_name[] = "config_1";
+    char config_2_name[] = "config_2";
     H5CL_config_spec configs[2] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_1_name,
-        /* max_num_params = */ group_1_num_params,
+        /* config_name    = */ config_1_name,
+        /* max_num_params = */ config_1_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       },
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_2_name,
-        /* max_num_params = */ group_2_num_params,
+        /* config_name    = */ config_2_name,
+        /* max_num_params = */ config_2_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
     };
 
-    H5CL_nv_pair_t group_1_config_nv_pairs[1];
-    H5CL_nv_pair_t group_2_config_nv_pairs[1];
+    H5CL_nv_pair_t config_1_nv_pairs[1];
+    H5CL_nv_pair_t config_2_nv_pairs[1];
 
     TESTING("H5CL_parse_config_group() err detect & report 2");
 
     /* setup the name value pair arrays. */
 
-    for ( i = 0; i < group_1_num_params; i++ ) {
+    for ( i = 0; i < config_1_num_params; i++ ) {
 
-        group_1_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_1_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
-    for ( i = 0; i < group_2_num_params; i++ ) {
+    for ( i = 0; i < config_2_num_params; i++ ) {
 
-        group_2_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_2_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_1_config_nv_pairs[0]);
-    configs[1].nv_pairs = &(group_2_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_1_nv_pairs[0]);
+    configs[1].nv_pairs = &(config_2_nv_pairs[0]);
 
     /* Purposely pass num_configs value that is less than required */
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups - 1, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs - 1, configs) >= 0 ) {
        TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -3933,7 +3937,7 @@ cl_parse_config_group_err_check_2(void){
 
     /* cleanup after test. */
     /* Don't try to clean up nv pairs that H5CL_parse_config_group() didn't initialize */
-    for ( i = 0; i < num_config_groups - 1; i++ ) {
+    for ( i = 0; i < num_configs - 1; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -3962,6 +3966,8 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
+ * Specifically, test that H5CL_parse_config_group() errors when one of the
+ * configs[].max_num_configs values is too small.
  *
  *                                              Cody S. -- 4/20/26
  *
@@ -3975,7 +3981,7 @@ cl_parse_config_group_err_check_3(void){
     const char * input_string = 
         "( top_name "
         "  ("
-        "    ( group_name "
+        "    ( config_name "
         "      ("
         "        ( param_1 1 )"
         "        ( param_2 2 )"
@@ -3987,35 +3993,35 @@ cl_parse_config_group_err_check_3(void){
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 1;
-    int group_num_params = 3;
+    int num_configs = 1;
+    int config_num_params = 3;
     char top_name[] = "top_name";
-    char group_name[] = "group_name";
+    char config_name[] = "config_name";
     H5CL_config_spec configs[1] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_name,
-        /* max_num_params = */ group_num_params - 1,    /* purposely set to less than needed*/
+        /* config_name    = */ config_name,
+        /* max_num_params = */ config_num_params - 1,    /* purposely set to less than needed*/
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
     };
 
-    H5CL_nv_pair_t group_config_nv_pairs[3];
+    H5CL_nv_pair_t config_nv_pairs[3];
 
     TESTING("H5CL_parse_config_group() err detect & report 3");
 
     /* setup the name value pair arrays */
-    for ( i = 0; i < group_num_params; i++ ) {
+    for ( i = 0; i < config_num_params; i++ ) {
 
-        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_nv_pairs[0]);
 
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
         TEST_ERROR;
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
                                     "max number of name value pairs exceeded.",
@@ -4025,7 +4031,7 @@ cl_parse_config_group_err_check_3(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -4054,6 +4060,8 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
+ * Specifically, test that H5CL_parse_config_group() errors both when the 
+ * top-level group name and a config name dont match the configuration string.
  *
  *                                              Cody S. -- 4/21/26
  *
@@ -4067,7 +4075,7 @@ cl_parse_config_group_err_check_4(void){
     const char * input_string = 
         "( top_name "
         "  ("
-        "    ( group_name "
+        "    ( config_name "
         "      ("
         "        ( param 1 )"
         "      )"
@@ -4077,38 +4085,38 @@ cl_parse_config_group_err_check_4(void){
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 1;
-    int group_num_params = 1;
+    int num_configs = 1;
+    int config_num_params = 1;
     char wrong_name[] = "wrong_name";
     char top_name[] = "top_name";
-    char group_name[] = "group_name";
+    char config_name[] = "config_name";
     H5CL_config_spec configs[1] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_name,
-        /* max_num_params = */ group_num_params,
+        /* config_name    = */ config_name,
+        /* max_num_params = */ config_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
     };
     
-    H5CL_nv_pair_t group_config_nv_pairs[1];
+    H5CL_nv_pair_t config_nv_pairs[1];
 
     TESTING("H5CL_parse_config_group() err detect & report 4");
 
     /* setup the name value pair array. */
-    for ( i = 0; i < group_num_params; i++ ) {
+    for ( i = 0; i < config_num_params; i++ ) {
 
-        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_nv_pairs[0]);
 
     /* First pass wrong topmost nv_pair name */
-    if ( H5CL_parse_config_group(input_string, wrong_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, wrong_name, num_configs, configs) >= 0 ) {
        TEST_ERROR;
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
                                     "config group name mismatch.",
@@ -4117,10 +4125,10 @@ cl_parse_config_group_err_check_4(void){
         TEST_ERROR;
     }
 
-    /* Now set the config group's expected name to wrong_name and retry with the correct top-level name */
+    /* Now set the config's expected name to wrong_name and retry with the correct top-level name */
     configs[0].config_name = wrong_name;
     
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
        TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -4131,7 +4139,7 @@ cl_parse_config_group_err_check_4(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -4159,7 +4167,9 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
- *
+ * Specifically, test that H5CL_parse_config_group() errors when the top-level 
+ * group config doesn't use a list as its value.
+ * 
  *                                              Cody S. -- 4/21/26
  *
  * Changes:
@@ -4173,35 +4183,35 @@ cl_parse_config_group_err_check_5(void){
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 1;
-    int group_num_params = 1;
+    int num_configs = 1;
+    int config_num_params = 1;
     char top_name[] = "top_name";
-    char group_name[] = "group_name";
+    char config_name[] = "config_name";
     H5CL_config_spec configs[1] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_name,
-        /* max_num_params = */ group_num_params,
+        /* config_name    = */ config_name,
+        /* max_num_params = */ config_num_params,
         /* nv_pairs       = */ NULL,
         /* parse          = */ false
       }
     };
 
-    H5CL_nv_pair_t group_config_nv_pairs[1];
+    H5CL_nv_pair_t config_nv_pairs[1];
 
     TESTING("H5CL_parse_config_group() err detect & report 5");
 
     /* setup the name value pair array. */
-    for ( i = 0; i < group_num_params; i++ ) {
+    for ( i = 0; i < config_num_params; i++ ) {
 
-        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_nv_pairs[0]);
 
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
        TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -4212,7 +4222,7 @@ cl_parse_config_group_err_check_5(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -4240,6 +4250,8 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
+ * Specifically, test that H5CL_parse_config_group() errors when a 
+ * configuration within the group doesn't contain a list as its value.
  *
  *                                              Cody S. -- 4/21/26
  *
@@ -4253,41 +4265,41 @@ cl_parse_config_group_err_check_6(void){
     const char * input_string = 
         "( top_name "
         "  ("
-        "    ( group_name 1 )" /* Group value isn't a list */
+        "    ( config_name 1 )" /* config value isn't a list */
         "  )"
         ")";
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 1;
-    int group_num_params = 1;
+    int num_configs = 1;
+    int config_num_params = 1;
     char top_name[] = "top_name";
-    char group_name[] = "group_name";
+    char config_name[] = "config_name";
     H5CL_config_spec configs[1] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_name,
-        /* max_num_params = */ group_num_params,
+        /* config_name    = */ config_name,
+        /* max_num_params = */ config_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
     };
     
-    H5CL_nv_pair_t group_config_nv_pairs[1];
+    H5CL_nv_pair_t config_nv_pairs[1];
 
     TESTING("H5CL_parse_config_group() err detect & report 6");
 
     /* setup the name value pair array. */
-    for ( i = 0; i < group_num_params; i++ ) {
+    for ( i = 0; i < config_num_params; i++ ) {
 
-        group_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_nv_pairs[0]);
 
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
        TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -4298,7 +4310,7 @@ cl_parse_config_group_err_check_6(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
@@ -4327,6 +4339,8 @@ error:
  *
  * Verify that the config group parser function detects and reports errors 
  * as expected.
+ * Specifically, test that H5CL_parse_config_group() errors when an extra 
+ * unneeded H5CL_config_spec element is added to the configs[] array.
  *
  *                                              Cody S. -- 4/21/26
  *
@@ -4340,7 +4354,7 @@ cl_parse_config_group_err_check_7(void){
     const char * input_string = 
         "( top_name "
         "  ("
-        "    ( group_name "
+        "    ( config_name "
         "      ("
         "        ( param 1 )"
         "      )"
@@ -4350,52 +4364,52 @@ cl_parse_config_group_err_check_7(void){
     bool verbose = true;
     int i;
     int j;
-    int num_config_groups = 2;
-    int group_1_num_params = 1;
-    int group_2_num_params = 1;
+    int num_configs = 2;
+    int config_1_num_params = 1;
+    int config_2_num_params = 1;
     char top_name[] = "top_name";
-    char group_1_name[] = "group_1_name";
-    char group_2_name[] = "group_2_name";
+    char config_1_name[] = "config_1_name";
+    char config_2_name[] = "config_2_name";
     H5CL_config_spec configs[2] =
     {
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_1_name,
-        /* max_num_params = */ group_1_num_params,
+        /* config_name    = */ config_1_name,
+        /* max_num_params = */ config_1_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       },
       {
         /* struct_tag     = */ H5CL_CONFIG_SPEC_STRUCT_TAG,
-        /* config_name    = */ group_2_name,
-        /* max_num_params = */ group_2_num_params,
+        /* config_name    = */ config_2_name,
+        /* max_num_params = */ config_2_num_params,
         /* nv_pairs       = */ NULL, /* will overwrite */
         /* parse          = */ false
       }
     };
     
-    H5CL_nv_pair_t group_1_config_nv_pairs[1];
-    H5CL_nv_pair_t group_2_config_nv_pairs[1];
+    H5CL_nv_pair_t config_1_nv_pairs[1];
+    H5CL_nv_pair_t config_2_nv_pairs[1];
 
     TESTING("H5CL_parse_config_group() err detect & report 7");
 
     /* setup the name value pair array. */
-    for ( i = 0; i < group_1_num_params; i++ ) {
+    for ( i = 0; i < config_1_num_params; i++ ) {
 
-        group_1_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_1_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
-    for ( i = 0; i < group_2_num_params; i++ ) {
+    for ( i = 0; i < config_2_num_params; i++ ) {
 
-        group_2_config_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
+        config_2_nv_pairs[i].struct_tag = H5CL_NV_PAIR_STRUCT_TAG;
     }
 
 
     /* load pointers to the actual nv pair arrays into configs[] */
-    configs[0].nv_pairs = &(group_1_config_nv_pairs[0]);
-    configs[1].nv_pairs = &(group_2_config_nv_pairs[0]);
+    configs[0].nv_pairs = &(config_1_nv_pairs[0]);
+    configs[1].nv_pairs = &(config_2_nv_pairs[0]);
     
-    if ( H5CL_parse_config_group(input_string, top_name, num_config_groups, configs) >= 0 ) {
+    if ( H5CL_parse_config_group(input_string, top_name, num_configs, configs) >= 0 ) {
        TEST_ERROR;
 
     } else if ( 0 != cl_test_verify_error_stack(H5E_ARGS, H5E_BADVALUE, 
@@ -4406,7 +4420,7 @@ cl_parse_config_group_err_check_7(void){
     }
 
     /* cleanup after test. */
-    for ( i = 0; i < num_config_groups; i++ ) {
+    for ( i = 0; i < num_configs; i++ ) {
 
         for ( j = 0; j < configs[i].max_num_params; j++ ) {
 
