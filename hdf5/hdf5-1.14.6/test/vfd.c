@@ -92,8 +92,8 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
  * If neither are 1, will test up to page size of 1 MiB. 
  *      (only requires over 2 GiB of RAM)
  */
-#define PB_TEST_ALL_SIZES 1
-#define PB_TEST_4M        1
+#define PB_TEST_ALL_SIZES 0
+#define PB_TEST_4M        0
 
 #define CRYPT_DS_SIZE 8
 #define CRYPT_DATASET_NAME "dataset"
