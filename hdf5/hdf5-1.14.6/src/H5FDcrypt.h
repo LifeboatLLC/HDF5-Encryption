@@ -98,18 +98,23 @@
  *                1 = GCRY_CIPHER_TWOFISH
  * 
  * cipher_block_size (size_t):
- *      Size of the cipher block in bytes.
+ *      Size of the cipher block in bytes. Determined by the cipher.
  * 
  * key_size (size_t):
- *      Size of the key in bytes.
+ *      Size of the key in bytes. Determined by the cipher.
+ * 
+ *      NOTE: some ciphers may have multiple variants that have different
+ *      key sizes. An example is AES128 and AES256 which are both AES 
+ *      ciphers but have a 128 key size and a 256 key size respectively.
  * 
  * unit8_t key[H5FD_CRYPT_MAX_KEY_SIZE]:
  *      Buffer to hold the key. Next iteration the key will be in a secure
  *      memory pool made by the libgcrypt library.
  * 
  * iv_size (size_t):
- *      Size of the initialization vector in bytes. Normally same size as
- *      block size.
+ *      Size of the initialization vector (IV) in bytes. The mode determines 
+ *      if an IV is used, and the size of the IV is normally the same size
+ *      as the cipher's block size.
  * 
  * mode (int):
  *      Mode of operation for the encryption, which controls how multiple

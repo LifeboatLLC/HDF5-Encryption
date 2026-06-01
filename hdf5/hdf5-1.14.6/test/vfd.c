@@ -77,6 +77,24 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
 #define PB_DS_SIZE 8
 #define PB_DATASET_NAME "dataset"
 
+/**
+ * Macros to determine how large of page sizes the page buffer tests will
+ * test up to. 
+ * 
+ * If PB_TEST_ALL_SIZES is 1, 
+ *      will test up to page size of 16 MiB. 
+ *      (requires over 32 GiB of RAM and environment variable HDF5TestExpress to be 0)
+ *      
+ * If PB_TEST_4M is 1, 
+ *      will test up to page size of 4 MiB. 
+ *      (requires over 8 GiB of RAM amd environment variable HDF5TestExpress to be 0 or 1)
+ * 
+ * If neither are 1, will test up to page size of 1 MiB. 
+ *      (only requires over 2 GiB of RAM)
+ */
+#define PB_TEST_ALL_SIZES 0
+#define PB_TEST_4M        0
+
 #define CRYPT_DS_SIZE 8
 #define CRYPT_DATASET_NAME "dataset"
 
@@ -205,38 +223,34 @@ static int run_pb_test(const struct pb_dataset_def *data, const hid_t sub_fapl_i
 static int pb_RO_test(const struct pb_dataset_def *data, hid_t child_fapl_id, bool cl_config);
 static int pb_create_single_file_at(const char *filename, hid_t fapl_id, const struct pb_dataset_def *data);
 static int pb_compare_expected_data(hid_t file_id, const struct pb_dataset_def *data);
-static int pb_test_create_write_read(bool cl_config);
-static int pb_test_head_middle_tail(bool cl_config);
-static int pb_test_rp_eviction_and_invalidation(bool cl_config);
-static int pb_test_rp_eviction_and_invalidation_fifo(bool cl_config);
-static int pb_test_page_combinations(bool cl_config);
-static int pb_test_specific_cases(bool cl_config);
+static int pb_test_create_write_read(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_head_middle_tail(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_rp_eviction_and_invalidation_lru(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_rp_eviction_and_invalidation_fifo(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_page_combinations(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_specific_cases(char *config_str, H5FD_pb_vfd_config_t vfd_config);
+static int pb_test_invalid_config(bool cl_config);
+static int pb_test_invalid_config_helper(bool cl_config, size_t page_size, size_t max_pages, int32_t rp);
+static int pb_test_invalid_addrs_and_buffs(bool cl_config);
+static int pb_test_using_env_var(void);
+static int pb_test_invalid_config_using_env_var(void);
 static herr_t test_pb(bool cl_config);
 
 
 /* H5FDpb.c test function */
 haddr_t *H5FD__pb_rp_eviction_check(H5FD_t *file_ptr, haddr_t *returned_addrs);
+haddr_t *H5FD__pb_rp_invalid_check(H5FD_t *_file, haddr_t invalid_page_addr);
 
 static int compare_crypt_config_info(hid_t fapl_id, H5FD_crypt_vfd_config_t *info);
 static int compare_crypt_config_str(hid_t fapl_id, char *cannonical_str);
 static int test_crypt_fapl(bool cl_config);
-static int crypt_test_create(bool cl_config);
-static int crypt_test_create_and_write(bool cl_config);
-static int crypt_test_verify_create_and_encryption(bool cl_config);
-static int crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config);
-#if 0
-static int crypt_test_write_3pages(void);
-static int crypt_test_write_15pages(void);
-static int crypt_test_write_16pages(void);
-static int crypt_test_write_17pages(void);
-static int crypt_test_write_18pages(void);
-static int crypt_test_write_32pages(void);
-static int crypt_test_write_33pages(void);
-#endif
-static int crypt_test_create_and_write_twofish(bool cl_config);
-static int crypt_test_verify_create_and_encryption_twofish(bool cl_config);
-static int crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd_config, 
-                                             char * config_str, bool cl_config);
+static int crypt_test_create(char *config_str, H5FD_crypt_vfd_config_t vfd_config);
+static int crypt_test_verify_create_and_encryption(char *config_str, H5FD_crypt_vfd_config_t vfd_config);
+static int crypt_test_write_and_read(size_t num_pages, char *config_str, H5FD_crypt_vfd_config_t vfd_config);
+static int crypt_test_invalid_config(bool cl_config);
+static int crypt_test_invalid_config_helper(bool cl_config, size_t pt_size, size_t ct_size, size_t buf_size, 
+                            int32_t cipher, size_t block_size, size_t key_size, size_t iv_size, int32_t mode);
+static int crypt_test_invalid_addrs_and_buffs(bool cl_config);
 static int run_crypt_test(const struct crypt_dataset_def *data, const hid_t sub_fapl_id, bool cl_config);
 static int crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl_config);
 static int crypt_create_single_file_at(const char *filename, hid_t fapl_id, const struct crypt_dataset_def *data);
@@ -4227,40 +4241,26 @@ done:
  *              Failure:        -1
  *
  * Description: Creates a file, and then tests the write and read function 
- *              by writing a full page (middle) and then reading it
+ *              by writing a full page (middle), reading the same page, and
+ *              comparing the write and read buffers to ensure data is the
+ *              same.
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language.
  *
  *-------------------------------------------------------------------------
  */
-static int
-pb_test_create_write_read(bool cl_config)
+static int 
+pb_test_create_write_read(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
     char                  filename[1024];
     hid_t                 fapl_id        = H5I_INVALID_HID;
     H5FD_t               *file_ptr       = NULL;
     int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "
-        "  ( ( page_size 4096 )"
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 0 )"
-        "  )"
-        ")";
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ H5FD_PB_DEFAULT_TESTING_OFF
-    };
-
     unsigned char        *page     = NULL;
     unsigned char        *read_buf = NULL;
 
     /* setup the target file name, and delete any existing instance */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
     HDremove(filename);
 
@@ -4273,7 +4273,7 @@ pb_test_create_write_read(bool cl_config)
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
@@ -4291,68 +4291,61 @@ pb_test_create_write_read(bool cl_config)
 
 
     /* Opens a file that doesn't exist, should create the file */
-
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
     
-    /***** Write middle test *****/
+    /*****************************/
+    /***** Simple Write Test *****/
+    /*****************************/
 
     page = (unsigned char *)malloc(vfd_config.page_size);
     if (NULL == page) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
 
-
     /* Fill the buffer with random characters to simulate data */
-
     for (size_t i = 0; i < vfd_config.page_size; i++)
         page[i] = (unsigned char)rand() % 256;
 
-
     /* set the eoa so we can write the page of data */
-
     if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size)) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
-
     /* Write the data to the file */
-
     if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
                     vfd_config.page_size, page) < 0)
         PB_TEST_FAULT("couldn't write data to file\n");
 
     
-    /***** Read middle test *****/
+    /****************************/
+    /***** Simple Read Test *****/
+    /****************************/
     
     read_buf = (unsigned char *)malloc(vfd_config.page_size);
     if (NULL == read_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
     
+    /* Read data from file */
     if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0,  
                     vfd_config.page_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /* Compare data read with data written to ensure its the same */
     if (memcmp(page, read_buf, vfd_config.page_size) != 0) 
         PB_TEST_FAULT("data read from file doesn't match data written\n");
-    
-    
-    if (H5Pclose(fapl_id) < 0) 
-        PB_TEST_FAULT("can't close FAPL ID\n");
-    
-    if (H5FDclose(file_ptr) < 0)
-        PB_TEST_FAULT("can't close file\n");
 
 
 done:
 
-    if (ret_value < 0) {
-        H5E_BEGIN_TRY
-        {
-            H5Pclose(fapl_id);
-            H5FDclose(file_ptr);
-        }
-        H5E_END_TRY
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
     }
 
     if (page) 
@@ -4365,7 +4358,6 @@ done:
 
 } /* end pb_test_create_write_read */
 
-
 /*-------------------------------------------------------------------------
  * Function:    pb_test_head_middle_tail
  *
@@ -4375,45 +4367,45 @@ done:
  *              Failure:        -1
  *
  * Description: Opens a file and writes 96 pages in the file to test 
- *              reading and writing with a non-blank file. Then closes the
- *              the file and reopens it to start fresh. Then writes and 
- *              reads head, middle, and tail pages, and compares read data
- *              to ensure file is correct after write and reads.
- *              
+ *              reading and writing with a non-blank file. 
+ *              Writes and reads head, middle, and tail pages, and compares
+ *              read data to ensure file is correct after write and reads.
+ *              The heads and tails are tested with different sizes of
+ *              partial pages, from 1 byte up to only 1 byte less than the
+ *              page size.
+ *                  
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language.
  *
  *-------------------------------------------------------------------------
  */
 static int
-pb_test_head_middle_tail(bool cl_config)
+pb_test_head_middle_tail(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
-    char                  filename[1024];
-    hid_t                 fapl_id        = H5I_INVALID_HID;
-    H5FD_t               *file_ptr       = NULL;
-    int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "       
-        "  ( ( page_size 4096 )" 
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 0 )"
-        "  )"
-        ")";
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ H5FD_PB_DEFAULT_TESTING_OFF
-    };
-    unsigned char        *setup_buf  = NULL;
-    unsigned char        *page         = NULL;
-    unsigned char        *read_buf     = NULL;
-    size_t                partial_page_size = vfd_config.page_size / 2;
+    char           filename[1024];
+    hid_t          fapl_id        = H5I_INVALID_HID;
+    H5FD_t        *file_ptr       = NULL;
+    int            ret_value      = 0;
+    unsigned char *setup_buf      = NULL;
+    unsigned char *page           = NULL;
+    unsigned char *read_buf       = NULL;
+    size_t         page_size      = vfd_config.page_size;
+    size_t         partial_sizes[] = { 1,
+                                       page_size / 8,
+                                       page_size / 4,
+                                       page_size / 2,
+                                       page_size - 1 };
+    size_t         num_partial_sizes = sizeof(partial_sizes) / sizeof(partial_sizes[0]);
+    size_t         partial_page_size;
+    size_t         page_num;
+    haddr_t        head_addr1;
+    haddr_t        head_addr2;
+    haddr_t        mid_addr1;
+    haddr_t        mid_addr2;
+    haddr_t        tail_addr1;
+    haddr_t        tail_addr2;
 
     /* setup the target file name, and delete any existing instance */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
     HDremove(filename);
 
@@ -4425,7 +4417,7 @@ pb_test_head_middle_tail(bool cl_config)
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
@@ -4442,16 +4434,15 @@ pb_test_head_middle_tail(bool cl_config)
     }
 
     
-    /* Opens a file that doesn't exist, should create the file */
-    
+    /* Opens a file */
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
     
     
-    /***** Sets up file to be non-empty *****/
-    
+    /* Sets up file to be non-empty */
+
     setup_buf = (unsigned char *)malloc(vfd_config.page_size * 96);
     if (NULL == setup_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
@@ -4462,149 +4453,146 @@ pb_test_head_middle_tail(bool cl_config)
     if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 96)) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.page_size * 96, setup_buf) < 0)
-        PB_TEST_FAULT("couldn't write create_file to file\n");
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, page_size * 96, setup_buf) < 0)
+        PB_TEST_FAULT("couldn't write  to file\n");
 
 
+    /***** Allocates page of random characters to write, and buffer to read to *****/
 
-    /* Closes the file and fapl to start tests fresh */
-    if (H5Pclose(fapl_id) < 0) 
-        PB_TEST_FAULT("can't close FAPL ID\n");
-    
-    if (H5FDclose(file_ptr) < 0)
-        PB_TEST_FAULT("can't close file\n");
+    page = (unsigned char *)malloc(page_size);
+    if (NULL == page) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
 
+    for (size_t i = 0; i < page_size; i++)
+        page[i] = (unsigned char)rand() % 256;
 
-
-    /***** Creates new fapl and reopens file for tests *****/
-    
-    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
-
-    if (H5I_INVALID_HID == fapl_id) {
-        PB_TEST_FAULT("can't create FAPL ID\n");
-    }
-
-    if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
-        PB_TEST_FAULT("can't set pb FAPL\n");
-    }
-
-    if (H5Pget_driver(fapl_id) != H5FD_PB) {
-        PB_TEST_FAULT("set FAPL not PB\n");
-    }
-
-    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
-                    fapl_id, HADDR_UNDEF))) 
-        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
-
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 96)) < 0 )
-        PB_TEST_FAULT("couldn't set file eoa\n");
-
+    read_buf = (unsigned char *)malloc(page_size);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
 
     /**********************/
     /***** Head Tests *****/
     /**********************/
 
-    page = (unsigned char *)malloc(vfd_config.page_size);
-    if (NULL == page) 
-        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+    /* Iterates different sizes of head pages */
+    for ( size_t ps = 0; ps < num_partial_sizes; ps++ )
+    {
+        partial_page_size = partial_sizes[ps];
 
-    for (size_t i = 0; i < vfd_config.page_size; i++)
-        page[i] = (unsigned char)rand() % 256;
+        /**
+         * Get a random addr that qualifies for a head. 
+         * Unless partial_page_size == page_size - 1, 
+         * because there is only one possible addr option.
+         */
+        if ( partial_page_size == page_size - 1)
+        {
+            head_addr1 = 1;
+        }
+        else
+        {
+            head_addr1 = (size_t)rand() % (page_size - partial_page_size);
+            if ( head_addr1 == 0 )
+            {
+                head_addr1 = 1;
+            }
+        }
 
-    read_buf = (unsigned char *)malloc(vfd_config.page_size);
-    if (NULL == read_buf) 
-        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+        page_num = (ps == 0) ? ps : ps + 1;
+             
+        head_addr1 = head_addr1 + ( page_size * page_num );
+
+        head_addr2 = ( head_addr1 + page_size );
 
 
+        /***** Write head when page is NOT in page buffer *****/
 
-    /***** Write head when page is NOT in page buffer *****/
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, head_addr1, partial_page_size, page) < 0)
+        {
+            PB_TEST_FAULT("couldn't write head to file\n");
+        }
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, partial_page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write head to file\n");
+        /** TODO: validate rp list and reads and writes */
+
+        /***** Read head when page is in page buffer *****/
+
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, head_addr1, partial_page_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read head from file\n");
+        }
+        if (memcmp(page, read_buf, partial_page_size) != 0) 
+        {
+            PB_TEST_FAULT("head read from file doesn't match data written\n");
+        }
 
 
-    /***** Read head when page is NOT in page buffer *****/
+        /***** Read head when page is NOT in page buffer *****/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 6144, partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read head from file\n");
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, head_addr2, partial_page_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read head from file\n");
+        }
+        if (memcmp(setup_buf + head_addr2, read_buf, partial_page_size) != 0) 
+        {
+            PB_TEST_FAULT("head read from file doesn't match data written\n");
+        }
+
+
+        /***** Write head when page is in page buffer *****/
+
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, head_addr2, partial_page_size, page) < 0)
+        {
+            PB_TEST_FAULT("couldn't write head to file\n");
+        }
+
+    } /* end for ( size_t ps = 0; ps < num_partial_sizes; ps++ ) */
     
-    if (memcmp(setup_buf + 6144, read_buf, partial_page_size) != 0) 
-        PB_TEST_FAULT("head read from file doesn't match data written\n");
-
-
-
-    /***** Write head when page is in page buffer *****/
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 6144, partial_page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write head to file\n");
-
-
-    /***** Read head when page is in page buffer *****/
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2048, partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read head from file\n");
-
-    if (memcmp(page, read_buf, partial_page_size) != 0) 
-        PB_TEST_FAULT("head read from file doesn't match data written\n");
-
-
-
-    /***** Write head when data starts and ends inside of a page *****/
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 1000, partial_page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write head to file\n");
-
-    
-    /***** Read head when data starts and ends inside of a page *****/
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 1000, partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read head from file\n");
-
-    if (memcmp(page, read_buf, partial_page_size) != 0) 
-        PB_TEST_FAULT("head read from file doesn't match data written\n");
-
 
 
     /************************/
     /***** Middle Tests *****/
     /************************/
 
+    mid_addr1 = 10 * page_size;
+    mid_addr2 = 11 * page_size;
+
     /***** Write middle when page is NOT in page buffer *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8191, vfd_config.page_size, page) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, mid_addr1, page_size, page) < 0)
+    {
         PB_TEST_FAULT("couldn't write data to file\n");
-
-    
-    /***** Read middle when page is NOT in page buffer *****/
-    
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, vfd_config.page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
-
-    if (memcmp(setup_buf + 12288, read_buf, vfd_config.page_size) != 0) 
-        PB_TEST_FAULT("data read from file doesn't match data written\n");
-
-    
-    
-    /***** Write middle when page is in page buffer *****/
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write data to file\n");
-    
+    }
 
 
     /***** Read middle when page is in page buffer *****/
 
-    /* head read to get the needed page for the middle read test in the page buffer */
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 14336, partial_page_size, read_buf) < 0) 
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, mid_addr1, page_size, read_buf) < 0) 
+    {
         PB_TEST_FAULT("couldn't read data from file\n");
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, vfd_config.page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
-
-    if (memcmp(setup_buf + 12288, read_buf, vfd_config.page_size) != 0) 
+    }
+    if (memcmp(page, read_buf, page_size) != 0) 
+    {
         PB_TEST_FAULT("data read from file doesn't match data written\n");
+    }
 
+    
+    /***** Read middle when page is NOT in page buffer *****/
+    
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, mid_addr2, page_size, read_buf) < 0) 
+    {
+        PB_TEST_FAULT("couldn't read data from file\n");
+    }
+    if (memcmp(setup_buf + mid_addr2, read_buf, page_size) != 0) 
+    {
+        PB_TEST_FAULT("data read from file doesn't match data written\n");
+    }
+    
+    
+    /***** Write middle when page is in page buffer *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, mid_addr2, page_size, page) < 0)
+    {
+        PB_TEST_FAULT("couldn't write data to file\n");
+    }
 
 
 
@@ -4612,38 +4600,76 @@ pb_test_head_middle_tail(bool cl_config)
     /***** Tail Tests *****/
     /**********************/
 
+    /* Iterates different sizes of head pages */
+    for ( size_t ps = 0; ps < num_partial_sizes; ps++ )
+    {
+        partial_page_size = partial_sizes[ps];
 
-    /***** Write tail when page is NOT in page buffer *****/
+        /**
+         * Get a random addr that qualifies for a head. 
+         * Unless partial_page_size == page_size - 1, 
+         * because there is only one possible addr option.
+         */
+        if ( partial_page_size == page_size - 1)
+        {
+            tail_addr1 = 1;
+        }
+        else
+        {
+            tail_addr1 = (size_t)rand() % (page_size - partial_page_size);
+            if ( tail_addr1 == 0 )
+            {
+                tail_addr1 = 1;
+            }
+        }
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write tail to file\n");
+        page_num = (ps == 0) ? ps + 12 : ps + 13;
+             
+        tail_addr1 = tail_addr1 + ( page_size * page_num );
 
-    
-    /***** Read tail when page is NOT in page buffer *****/
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 20480, partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read tail from file\n");
-
-    if (memcmp(setup_buf + 20480, read_buf, partial_page_size) != 0) 
-        PB_TEST_FAULT("tail read from file doesn't match data written\n");
-
-    
+        tail_addr2 = ( tail_addr1 + page_size );
 
 
-    /***** Write tail when page is in page buffer *****/
+        /***** Write tail when page is NOT in page buffer *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 20480, partial_page_size, page) < 0)
-        PB_TEST_FAULT("couldn't write tail to file\n");
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, tail_addr1, partial_page_size, page) < 0)
+        {
+            PB_TEST_FAULT("couldn't write tail to file\n");
+        }
 
-    
-    /***** Read tail when page is in page buffer *****/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read tail from file\n");
+        /***** Read tail when page is in page buffer *****/
 
-    if (memcmp(page, read_buf, partial_page_size) != 0) 
-        PB_TEST_FAULT("tail read from file doesn't match data written\n");
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, tail_addr1, partial_page_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read tail from file\n");
+        }
+        if (memcmp(page, read_buf, partial_page_size) != 0) 
+        {
+            PB_TEST_FAULT("tail read from file doesn't match data written\n");
+        }
 
+        
+        /***** Read tail when page is NOT in page buffer *****/
+
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, tail_addr2, partial_page_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read tail from file\n");
+        }
+        if (memcmp(setup_buf + tail_addr2, read_buf, partial_page_size) != 0) 
+        {
+            PB_TEST_FAULT("tail read from file doesn't match data written\n");
+        }
+
+
+        /***** Write tail when page is in page buffer *****/
+
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, tail_addr2, partial_page_size, page) < 0)
+        {
+            PB_TEST_FAULT("couldn't write tail to file\n");
+        }
+
+    } /* end for ( size_t ps = 0; ps < num_partial_sizes; ps++ ) */
 
 
     /***** End Tests *****/   
@@ -4681,106 +4707,88 @@ done:
 
 
 /*-------------------------------------------------------------------------
- * Function:    pb_test_rp_eviction_and_invalidation
+ * Function:    pb_test_rp_eviction_and_invalidation_lru
  *
  * Purpose:     Ensures the replacement policy (rp)'s eviction and
- *              invalidation functions work as expected.
+ *              invalidation functions work as expected, when the rp is
+ *              Least Recently Used (LRU).
  *
  * Return:      Success:        0
  *              Failure:        -1
  *
- * Description: Opens a file and writes 64 tail pages to it (tail pages 
- *              are used because they're easier to calculate the offset),
- *              to fill the page buffer with the max number of pages it 
- *              can hold. 
+ * Description: Opens a file and writes 64 tail pages to it, to fill the 
+ *              page buffer with the max number of pages it can hold. 
+ *              NOTE: tail pages are used simply because the offset is 
+ *              easier to calculate.
  * 
  *              Eviction:
- *              Then a new partial page is read to evict a page in the rp 
- *              list for the new page. An array with the expected addrs of 
- *              the pages that should be in the rp list is created (in the 
- *              same order as they should be in the rp list). A testing 
- *              function is called to read the rp list and return the
+ *              With the page buffer full, a new partial page is read to 
+ *              evict a page in the rp list for the new page. An array with 
+ *              the expected addrs of the pages that should be in the rp 
+ *              list is created (in the same order as they should be in the 
+ *              rp list). A testing function is called that returns the 
  *              actual addrs of the pages in the rp list. The expected and
  *              actual addrs are compared to ensure they match.
  * 
  *              Four more partial pages are read, that exists in the hash
- *              table (ht) to touch them updating their postion based on
- *              Least Recently Used (LRU) replacement policy. The expected
- *              addr array is updated to reflect the new order of what the
+ *              table (ht) to 'touch' them. The expected addr array is 
+ *              updated to reflect the new order of what the
  *              pages in the rp list should be. The testing function is
  *              called again to get the actual addrs of the pages in the rp
  *              list. The expected and actual addrs are compared to ensure
  *              they match.
  * 
  *              Invalidate:
- *              A middle write is performed to invalidate a page
- *              in the page buffer. This should move the page to be the
- *              next page to be evicted. A tail read is done with the
- *              addr of the page that was just invalidated. This checks to 
- *              ensure the invalidated page will not be used to satisfy the
- *              tail read, and it will have to read the page from the file
- *              evicting the invalidated page for the one from file.
- *              The expected addr array is updated to reflect the new order
+ *              A middle write is performed to invalidate a page in the page 
+ *              buffer. This should move the page to be the next page to be 
+ *              evicted. A tail read is done with the addr of the page that 
+ *              was just invalidated, to ensure the invalidated page will 
+ *              not be used to satisfy reads, and it will have to read the 
+ *              page from the file, evicting the invalidated page. The 
+ *              expected addr array is updated to reflect the new order
  *              of the rp list, and the testing function is called to get 
  *              the actual addrs of the pages in the rp list. The expected 
  *              and actual addrs are compared to ensure they match.
  * 
- *              An invalidation test is done again, but this time a
+ *              The invalidation test is done again, but this time a
  *              different page is being read in than what was invalidated.
  * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language. 
  *              
  *-------------------------------------------------------------------------
  */
 static int
-pb_test_rp_eviction_and_invalidation(bool cl_config)
+pb_test_rp_eviction_and_invalidation_lru(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
 
-    char                  filename[1024];
-    hid_t                 fapl_id        = H5I_INVALID_HID;
-    H5FD_t               *file_ptr       = NULL;
-    haddr_t               expected_rp_addrs_after_eviction[64];
-    haddr_t               actual_rp_addrs_after_eviction[64];
-    haddr_t              *returned_array = NULL;
+    char           filename[1024];
+    hid_t          fapl_id           = H5I_INVALID_HID;
+    H5FD_t        *file_ptr          = NULL;
+    haddr_t       *expected_rp_addrs = NULL;
+    haddr_t       *actual_rp_addrs   = NULL;
+    unsigned char *setup_buf         = NULL;
+    unsigned char *page              = NULL;
+    unsigned char *read_buf          = NULL;
+    size_t         page_size         = vfd_config.page_size;
+    size_t         partial_page_size = vfd_config.page_size / 2;
+    size_t         max_num_pages     = vfd_config.max_num_pages;
+    size_t         i                 = 0;
+    haddr_t       *invalid_page      = NULL;
+    int            ret_value         = 0;
 
-    int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "
-        "  ( ( page_size 4096 )"
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 0 )"
-        "    ( testing 1 )"
-        "  )"
-        ")";
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ true
-    };
-    unsigned char        *setup_buf    = NULL;
-    unsigned char        *page         = NULL;
-    unsigned char        *read_buf     = NULL;
-    size_t                partial_page_size = vfd_config.page_size / 2;
-    size_t                i            = 0;
 
     /* setup the target file name */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
 
-
     /* Create a new fapl to use the page buffer file driver */
-
     fapl_id = H5Pcreate(H5P_FILE_ACCESS);
 
     if (H5I_INVALID_HID == fapl_id) {
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
@@ -4796,41 +4804,73 @@ pb_test_rp_eviction_and_invalidation(bool cl_config)
         PB_TEST_FAULT("set FAPL not PB\n");
     }
 
-    /* Opens a file that does exist */
-
+    /* Open a file */
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
-    /***** Sets up file to be non-empty *****/
-
-    setup_buf = (unsigned char *)malloc(vfd_config.page_size);
+    /* Sets up file to be non-empty */
+    setup_buf = (unsigned char *)malloc(page_size);
     if (NULL == setup_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
     
-    for (i = 0; i < vfd_config.page_size; i++)
+    for (i = 0; i < page_size; i++)
         setup_buf[i] = (unsigned char)rand() % 256;
 
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 96)) < 0 )
+    /* Set eoa large enough so there are plenty of pages for testing */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(page_size * (max_num_pages * 2))) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
 
-    /* loops 64 times to fill the page buffer to it's maximum pages */
-    for (i = 0; i < 64; i++) {
+    /* Allocate space for the expected and actual replacement policy addrs */
+    expected_rp_addrs = malloc(max_num_pages * sizeof(*expected_rp_addrs));
+    if ( NULL == expected_rp_addrs )
+        PB_TEST_FAULT("couldn't allocate memory for expected_rp_addrs\n");
 
-        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size, 
+    actual_rp_addrs = malloc(max_num_pages * sizeof(*actual_rp_addrs));
+    if ( NULL == actual_rp_addrs )
+        PB_TEST_FAULT("couldn't allocate memory for expected_rp_addrs\n");
+
+
+    /******************************************************/
+    /***** Check RP list's order before any evictions *****/
+    /******************************************************/
+        
+    /* Fill the page buffer */
+    for (i = 0; i < max_num_pages; i++) {
+
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * page_size, 
                         partial_page_size, setup_buf) < 0)
             PB_TEST_FAULT("couldn't write page to file\n");
     }
 
-    page = (unsigned char *)malloc(vfd_config.page_size);
+    /* Set up expected addrs before evictions */
+    for (i = 0; i < max_num_pages; i++) 
+    {
+        expected_rp_addrs[i] = i * page_size;
+    }
+
+    /* Check the actual addrs of pages in page buffer before evictions */
+    actual_rp_addrs = (haddr_t *)malloc(max_num_pages * sizeof(haddr_t));
+    if (NULL == actual_rp_addrs) 
+        PB_TEST_FAULT("unable to allocate memory for current_rp_addrs\n");
+
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+
+
+    /* Allocates page of random characters to write, and buffer to read into */
+    page = (unsigned char *)malloc(page_size);
     if (NULL == page) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
 
-    for (i = 0; i < vfd_config.page_size; i++)
+    for (i = 0; i < page_size; i++)
         page[i] = (unsigned char)rand() % 256;
 
-    read_buf = (unsigned char *)malloc(vfd_config.page_size);
+    read_buf = (unsigned char *)malloc(page_size);
     if (NULL == read_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
 
@@ -4840,61 +4880,74 @@ pb_test_rp_eviction_and_invalidation(bool cl_config)
     /***** Eviction Test *****/
     /*************************/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 64 * vfd_config.page_size,  
+    /* Read a page to have the page buffer replace one with the new page */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, max_num_pages * page_size,  
                     partial_page_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
-    for (i = 0; i < 64; i++) {
-
-        expected_rp_addrs_after_eviction[i] = (i + 1) * vfd_config.page_size;
+    /* Set up expected addrs after eviction */
+    for (i = 0; i < max_num_pages; i++) 
+    {
+        expected_rp_addrs[i] = (i + 1) * page_size;
     }
 
-    returned_array = (haddr_t *)malloc(H5FD_PB_DEFAULT_MAX_NUM_PAGES * sizeof(haddr_t));
-    if (NULL == returned_array) 
-        PB_TEST_FAULT("unable to allocate memory for current_rp_addrs\n");
-
-    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, returned_array)) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
+        for ( i = 0; i < max_num_pages; i++ )
+        {
+            fprintf(stderr, "\nexpected_rp_addr[%zu]: %lu \nactual_rp_addrs[%zu]:  %lu",
+                        i, expected_rp_addrs[i], i, actual_rp_addrs[i]);
+        }
 
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
 
+    /**********************************************/
+    /***** Touching Pages In Page Buffer Test *****/
+    /**********************************************/
 
+    /***** LRU should moved touched pages to the end of the rp list *****/
 
-    /***** Rearranging rp list with touches *****/
-
-    for (i = 1; i < 5; i++) {
-
-        if ( H5FDread ( file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * 4096, partial_page_size, read_buf ) < 0 )
+    /* Touches the 4 pages after the first page in the rp list*/
+    for (i = 1; i < 5; i++) 
+    {
+        if ( H5FDread ( file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * page_size, 
+                                                            partial_page_size, read_buf ) < 0 )
             PB_TEST_FAULT("couldn't read data from file\n");
     }
 
-    for (i = 0; i < 64; i++) {
-
-        if ( i < 60 ) {
-
-            expected_rp_addrs_after_eviction[i] = (i + 5) * vfd_config.page_size;
+    /* Set up expected addrs after touches */
+    for (i = 0; i < max_num_pages; i++) 
+    {
+        if ( i < max_num_pages - 4 ) 
+        {
+            expected_rp_addrs[i] = (i + 5) * page_size;
         }
-
-        else {
-
-            expected_rp_addrs_after_eviction[i] = (i - 59) * vfd_config.page_size;
+        else 
+        {
+            expected_rp_addrs[i] = (i - (max_num_pages - 5) ) * page_size;
         } 
     }
 
-
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after touches */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0)
+    {
+        for ( i = 0; i < max_num_pages; i++ )
+        {
+            fprintf(stderr, "\nexpected_rp_addr[%zu]: %lu \nactual_rp_addrs[%zu]:  %lu",
+                        i, expected_rp_addrs[i], i, actual_rp_addrs[i]);
+        }
 
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
-
+    }
 
 
 
@@ -4904,93 +4957,149 @@ pb_test_rp_eviction_and_invalidation(bool cl_config)
 
     /***** middle write to invalidate a page putting it next to be evicted *****/
 
-    /* reading same page that was invalidated */
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24 * vfd_config.page_size, 
-                    vfd_config.page_size, page) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, max_num_pages * page_size, 
+                    page_size, page) < 0)
         PB_TEST_FAULT("couldn't write data to file\n");
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24 * vfd_config.page_size,  
-                    partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++) {
 
-    
-    for ( i = 0; i < 64; i++) {
-
-        if ( i < 19 ) {
-            expected_rp_addrs_after_eviction[i] = (i + 5) * vfd_config.page_size;
+        if ( i == 0 ) 
+        {
+            expected_rp_addrs[i] = (max_num_pages) * page_size;
         }
-
-        else if ( i >= 19 && i < 59 ) {
-            expected_rp_addrs_after_eviction[i] = (i + 6) * vfd_config.page_size;
+        else if ( i > 0 && i < (max_num_pages - 4) ) 
+        {
+            expected_rp_addrs[i] = (i + 4) * page_size;
         }
-
-        else if ( i >= 59 && i < 63 ) {
-            expected_rp_addrs_after_eviction[i] = (i - 58) * vfd_config.page_size;
-        }
-
-        else {
-            expected_rp_addrs_after_eviction[i] = 24 * vfd_config.page_size;
+        else 
+        {
+            expected_rp_addrs[i] = (i - (max_num_pages - 5)) * page_size;
         }
     }
 
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
+
+    /***** Ensure the invalidated page doesn't show up when searched for *****/
+
+    invalid_page = H5FD__pb_rp_invalid_check(file_ptr, max_num_pages * page_size);
+    
+    if ( invalid_page )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /***** partial read to evict the invalidated page *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (max_num_pages + 1) * page_size,  
+                    partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++) {
+
+        if ( i < max_num_pages - 5 ) 
+        {
+            expected_rp_addrs[i] = (i + 5) * page_size;
+        }
+        else if ( i < max_num_pages - 1 ) 
+        {
+            expected_rp_addrs[i] = (i - (max_num_pages - 6)) * page_size;
+        }
+        else  
+        {
+            expected_rp_addrs[i] = (max_num_pages + 1) * page_size;
+        }
+    }
+
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
 
     /***** middle write to invalidate a page putting it next to be evicted *****/
 
-    /* reading different page that was invalidated */
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16 * vfd_config.page_size, 
-                    vfd_config.page_size, page) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, page_size, 
+                    page_size, page) < 0)
         PB_TEST_FAULT("couldn't write data to file\n");
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0 * vfd_config.page_size,  
-                    partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
 
-    
-    for ( i = 11; i < 64; i++) {
-
-        if ( i < 18 ) {
-            expected_rp_addrs_after_eviction[i] = (i + 6) * vfd_config.page_size;
+        if ( i == 0 ) 
+        {
+            expected_rp_addrs[i] = page_size;
         }
-
-        else if ( i >= 18 && i < 58 ) {
-            expected_rp_addrs_after_eviction[i] = (i + 7) * vfd_config.page_size;
+        else if ( i < max_num_pages - 4 ) 
+        {
+            expected_rp_addrs[i] = (i + 4) * page_size;
         }
-
-        else if ( i >= 58 && i < 62 ) {
-            expected_rp_addrs_after_eviction[i] = (i - 57) * vfd_config.page_size;
+        else if ( i < max_num_pages - 1 ) 
+        {
+            expected_rp_addrs[i] = (i - (max_num_pages - 6)) * page_size;
         }
-
-        else if ( i == 62 ) {
-            expected_rp_addrs_after_eviction[i] = 24 * vfd_config.page_size;
-        }
-
-        else {
-            expected_rp_addrs_after_eviction[i] = 0 * vfd_config.page_size;
+        else 
+        {
+            expected_rp_addrs[i] = (max_num_pages + 1) * page_size;
         }
     }
 
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
 
+    /***** partial read to evict the invalidated page *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
+
+        if ( i < max_num_pages - 5 ) 
+        {
+            expected_rp_addrs[i] = (i + 5) * page_size;
+        }
+        else if ( i < max_num_pages - 2 ) 
+        {
+            expected_rp_addrs[i] = (i - (max_num_pages - 7)) * page_size;
+        }
+        else if ( i == max_num_pages - 2 ) 
+        {
+            expected_rp_addrs[i] = (max_num_pages + 1) * page_size;
+        }
+        else 
+        {
+            expected_rp_addrs[i] = 0;
+        }
+    }
+    
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
 
     /***** End Tests *****/   
@@ -5022,87 +5131,108 @@ done:
     if (read_buf)
         free(read_buf);
 
-    if (returned_array)
-        free(returned_array);
+    if (expected_rp_addrs)
+        free(expected_rp_addrs);
+
+    if (actual_rp_addrs)
+        free(actual_rp_addrs);
+
 
     return ret_value;
 
-} /* end pb_test_rp_eviction_and_invalidation */
+} /* end pb_test_rp_eviction_and_invalidation_lru */
 
 
 /*-------------------------------------------------------------------------
  * Function:    pb_test_rp_eviction_and_invalidation_fifo
  *
  * Purpose:     Ensures the replacement policy (rp)'s eviction and
- *              invalidation functions work as expected.
+ *              invalidation functions work as expected, when the rp is
+ *              First In First Out (FIFO).
  *
  * Return:      Success:        0
  *              Failure:        -1
  *
- * Description: The same tests are done as the previous test function 
- *              (pb_test_rp_eviction_and_invalidation), but this time with
- *              first in first out (FIFO) replacement policy, excluding the 
- *              touch tests, because touch doesn't matter in FIFO. 
+ * Description: Opens a file and writes 64 tail pages to it, to fill the 
+ *              page buffer with the max number of pages it can hold. 
+ *              NOTE: tail pages are used simply because the offset is 
+ *              easier to calculate.
+ * 
+ *              Eviction:
+ *              With the page buffer full, a new partial page is read to 
+ *              evict a page in the rp list for the new page. An array with 
+ *              the expected addrs of the pages that should be in the rp 
+ *              list is created (in the same order as they should be in the 
+ *              rp list). A testing function is called that returns the 
+ *              actual addrs of the pages in the rp list. The expected and
+ *              actual addrs are compared to ensure they match.
+ * 
+ *              Four more partial pages are read, that exists in the hash
+ *              table (ht) to 'touch' them. The expected addr array is NOT 
+ *              updated because touching a page doesn't affect the rp order
+ *              in FIFO. The testing function is called again to get the 
+ *              actual addrs of the pages in the rp list. The expected and 
+ *              actual addrs are compared to ensure they match.
+ * 
+ *              Invalidate:
+ *              A middle write is performed to invalidate a page in the page 
+ *              buffer. This should move the page to be the next page to be 
+ *              evicted. A tail read is done with the addr of the page that 
+ *              was just invalidated, to ensure the invalidated page will 
+ *              not be used to satisfy reads, and it will have to read the 
+ *              page from the file, evicting the invalidated page. The 
+ *              expected addr array is updated to reflect the new order
+ *              of the rp list, and the testing function is called to get 
+ *              the actual addrs of the pages in the rp list. The expected 
+ *              and actual addrs are compared to ensure they match.
+ * 
+ *              The invalidation test is done again, but this time a
+ *              different page is being read in than what was invalidated.
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language. 
  * 
  *              
  *-------------------------------------------------------------------------
  */
 static int
-pb_test_rp_eviction_and_invalidation_fifo(bool cl_config)
+pb_test_rp_eviction_and_invalidation_fifo(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
 
-    char                  filename[1024];
-    hid_t                 fapl_id        = H5I_INVALID_HID;
-    H5FD_t               *file_ptr       = NULL;
-    haddr_t               expected_rp_addrs_after_eviction[64];
-    haddr_t               actual_rp_addrs_after_eviction[64];
-    haddr_t              *returned_array = NULL;
+    char           filename[1024];
+    hid_t          fapl_id           = H5I_INVALID_HID;
+    H5FD_t        *file_ptr          = NULL;
+    haddr_t       *expected_rp_addrs = NULL;
+    haddr_t       *actual_rp_addrs   = NULL;
+    unsigned char *setup_buf         = NULL;
+    unsigned char *page              = NULL;
+    unsigned char *read_buf          = NULL;
+    size_t         page_size         = vfd_config.page_size;
+    size_t         partial_page_size = vfd_config.page_size / 2;
+    size_t         max_num_pages     = vfd_config.max_num_pages;
+    size_t         i                 = 0;
+    haddr_t       *invalid_page      = NULL;
+    int            ret_value         = 0;
 
-    int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "       
-        "  ( ( page_size 4096 )" 
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 1 )"
-        "    ( testing 1 )"
-        "  )"
-        ")"; 
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ 1, /* FIFO */
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ true
-    };
-    unsigned char        *setup_buf    = NULL;
-    unsigned char        *page         = NULL;
-    unsigned char        *read_buf     = NULL;
-    size_t                partial_page_size = vfd_config.page_size / 2;
-    size_t                i            = 0;
 
     /* setup the target file name */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
 
-
     /* Create a new fapl to use the page buffer file driver */
-
     fapl_id = H5Pcreate(H5P_FILE_ACCESS);
 
     if (H5I_INVALID_HID == fapl_id) {
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
-
+    if ( config_str ) 
+    {
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
         }
-    } else {
-
+    } 
+    else 
+    {
         if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
             PB_TEST_FAULT("can't set pb FAPL\n");
         }
@@ -5112,89 +5242,116 @@ pb_test_rp_eviction_and_invalidation_fifo(bool cl_config)
         PB_TEST_FAULT("set FAPL not PB\n");
     }
 
-    /* Opens a file that does exist */
-
+    /* Opens a file */
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
-    /***** Sets up file to be non-empty *****/
-
-    setup_buf = (unsigned char *)malloc(vfd_config.page_size);
+    /* Sets up file to be non-empty */
+    setup_buf = (unsigned char *)malloc(page_size);
     if (NULL == setup_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
     
-    for (i = 0; i < vfd_config.page_size; i++)
+    for (i = 0; i < page_size; i++)
         setup_buf[i] = (unsigned char)rand() % 256;
 
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 96)) < 0 )
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(page_size * (max_num_pages + 2))) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
 
-    /* loops 64 times to fill the page buffer to it's maximum pages */
-    for (i = 0; i < 64; i++) {
+    /* Allocate space for the expected and actual replacement policy addrs */
+    expected_rp_addrs = malloc(max_num_pages * sizeof(*expected_rp_addrs));
+    if ( NULL == expected_rp_addrs )
+        PB_TEST_FAULT("couldn't allocate memory for expected_rp_addrs\n");
 
-        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * vfd_config.page_size, 
+    actual_rp_addrs = malloc(max_num_pages * sizeof(*actual_rp_addrs));
+    if ( NULL == actual_rp_addrs )
+        PB_TEST_FAULT("couldn't allocate memory for expected_rp_addrs\n");
+    
+
+    /******************************************************/
+    /***** Check RP list's order before any evictions *****/
+    /******************************************************/
+
+    /* Fill the page buffer */
+    for (i = 0; i < max_num_pages; i++) 
+    {
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * page_size, 
                         partial_page_size, setup_buf) < 0)
             PB_TEST_FAULT("couldn't write page to file\n");
     }
 
-    page = (unsigned char *)malloc(vfd_config.page_size);
+    /* Set up expected addrs before evictions */
+    for (i = 0; i < max_num_pages; i++) 
+    {
+        expected_rp_addrs[i] = i * page_size;
+    }
+
+    /* Check the actual addrs of pages in page buffer before evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+
+    /* Allocates page of random characters to write, and buffer to read to */
+    page = (unsigned char *)malloc(page_size);
     if (NULL == page) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
 
-    for (i = 0; i < vfd_config.page_size; i++)
+    for (i = 0; i < page_size; i++)
         page[i] = (unsigned char)rand() % 256;
 
-    read_buf = (unsigned char *)malloc(vfd_config.page_size);
+    read_buf = (unsigned char *)malloc(page_size);
     if (NULL == read_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
 
 
 
-    /************************************/
-    /***** Eviction Test Using FIFO *****/
-    /************************************/
+    /*************************/
+    /***** Eviction Test *****/
+    /*************************/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 64 * vfd_config.page_size,  
+    /* Read a page to have the page buffer replace one with the new page */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, max_num_pages * page_size,  
                     partial_page_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
-    for (i = 0; i < 64; i++) {
+    /* Set up expected addrs after eviction */
+    for (i = 0; i < max_num_pages; i++) {
 
-        expected_rp_addrs_after_eviction[i] = (i + 1) * vfd_config.page_size;
+        expected_rp_addrs[i] = (i + 1) * page_size;
     }
 
-    returned_array = (haddr_t *)malloc(H5FD_PB_DEFAULT_MAX_NUM_PAGES * sizeof(haddr_t));
-    if (NULL == returned_array) 
-        PB_TEST_FAULT("unable to allocate memory for current_rp_addrs\n");
-
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
 
 
+    /**********************************************/
+    /***** Touching Pages In Page Buffer Test *****/
+    /**********************************************/
 
-    /***** Touching a page in the page buffer, should not rearrange the rp list with FIFO */
+    /***** FIFO should not change the rp list when pages are touched *****/
 
+    /* Touches the 4 pages after the first page in the rp list */
     for (i = 1; i < 5; i++) {
 
-        if ( H5FDread ( file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * 4096, partial_page_size, read_buf ) < 0 )
+        if ( H5FDread ( file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, i * page_size, 
+                                                            partial_page_size, read_buf ) < 0 )
+        {
             PB_TEST_FAULT("couldn't read data from file\n");
+        }
     }
 
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
 
 
@@ -5206,95 +5363,142 @@ pb_test_rp_eviction_and_invalidation_fifo(bool cl_config)
 
     /***** middle write to invalidate a page putting it next to be evicted *****/
 
-    /* reading same page that was invalidated */
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24 * vfd_config.page_size, 
-                    vfd_config.page_size, page) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, max_num_pages * page_size, 
+                    page_size, page) < 0)
         PB_TEST_FAULT("couldn't write data to file\n");
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24 * vfd_config.page_size,  
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
+
+        if ( i == 0 ) 
+        {
+            expected_rp_addrs[i] = max_num_pages * page_size;
+        }
+        else 
+        {
+
+            expected_rp_addrs[i] = i * page_size;
+        }
+    }
+
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+
+
+    /***** Ensure the invalidated page doesn't show up when searched for *****/
+
+    invalid_page = H5FD__pb_rp_invalid_check(file_ptr, max_num_pages * page_size);
+    
+    if ( invalid_page )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /***** partial read to evict the invalidated page *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (max_num_pages + 1) * page_size,  
                     partial_page_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
-    
-    for ( i = 0; i < 64; i++ ) {
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
 
-        if ( i < 23 ) {
+        if ( i < max_num_pages - 1 ) 
+        {
             
-            expected_rp_addrs_after_eviction[i] = ( i + 1 ) * vfd_config.page_size;
+            expected_rp_addrs[i] = ( i + 1 ) * page_size;
         }
-
-        else if ( i >= 23 && i < 63 ) {
-
-            expected_rp_addrs_after_eviction[i] = ( i + 2 ) * vfd_config.page_size;
-        }
-
-        else {
-
-            expected_rp_addrs_after_eviction[i] = 24 * vfd_config.page_size;
+        else 
+        {
+            expected_rp_addrs[i] = ( i + 2 ) * page_size;
         }
     }
 
     
-
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
 
 
 
     /***** middle write to invalidate a page putting it next to be evicted *****/
 
-    /* reading different page that was invalidated */
-
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16 * vfd_config.page_size, 
-                    vfd_config.page_size, page) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2 * page_size, 
+                    page_size, page) < 0)
         PB_TEST_FAULT("couldn't write data to file\n");
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0 * vfd_config.page_size,  
-                    partial_page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
 
-    
-    for ( i = 15; i < 64; i++ ) {
-
-        if ( i >= 15 && i < 22 ) {
-
-            expected_rp_addrs_after_eviction[i] = ( i + 2 ) * vfd_config.page_size;
+        if ( i == 0 ) 
+        {
+            expected_rp_addrs[i] = (i + 2) * page_size;
         }
+        else if ( i == 1 )
+        {
 
-        else if ( i >= 22 && i < 62 ) {
-
-            expected_rp_addrs_after_eviction[i] = ( i + 3 ) * vfd_config.page_size;
+            expected_rp_addrs[i] = page_size;
         }
-
-        else if ( i == 62 ) {
-
-            expected_rp_addrs_after_eviction[i] = 24 * vfd_config.page_size;
+        else if ( i < max_num_pages - 1 )
+        {
+            expected_rp_addrs[i] = (i + 1) * page_size;
         }
-
-        else {
-
-            expected_rp_addrs_after_eviction[i] = 0;
+        else
+        {
+            expected_rp_addrs[i] = (i + 2) * page_size;
         }
     }
 
-
-    returned_array = H5FD__pb_rp_eviction_check(file_ptr, returned_array);
-    if (returned_array == NULL) 
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
         PB_TEST_FAULT("couldn't get replacement policy addresses\n");
 
-    memcpy(actual_rp_addrs_after_eviction, returned_array, 64 * sizeof(haddr_t));
-
-
-    if (memcmp(expected_rp_addrs_after_eviction, actual_rp_addrs_after_eviction, 64 * sizeof(haddr_t)) != 0) 
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
         PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
+
+
+    /***** partial read to evict the invalidated page *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_page_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Set up expected addrs after evictions */
+    for ( i = 0; i < max_num_pages; i++ ) {
+
+        if ( i == 0 ) 
+        {
+            expected_rp_addrs[i] = page_size;
+        }
+        else if ( i < max_num_pages - 2 ) 
+        {
+            expected_rp_addrs[i] = ( i + 2 ) * page_size;
+        }
+        else if ( i < max_num_pages - 1 )
+        {
+            expected_rp_addrs[i] = ( i + 3 ) * page_size;
+        }
+        else 
+        {
+            expected_rp_addrs[i] = 0;
+        }
+    }
+
+    /* Check the actual addrs of pages in page buffer after evictions */
+    if (NULL == H5FD__pb_rp_eviction_check(file_ptr, actual_rp_addrs)) 
+        PB_TEST_FAULT("couldn't get replacement policy addresses\n");
+
+    if (memcmp(expected_rp_addrs, actual_rp_addrs, max_num_pages * sizeof(haddr_t)) != 0) 
+    {
+        PB_TEST_FAULT("expected pages in rp don't match the actual pages in rp.\n");
+    }
 
 
 
@@ -5327,8 +5531,12 @@ done:
     if (read_buf)
         free(read_buf);
 
-    if (returned_array)
-        free(returned_array);
+    if (expected_rp_addrs)
+        free(expected_rp_addrs);
+
+    if (actual_rp_addrs)
+        free(actual_rp_addrs);
+
 
     return ret_value;
 
@@ -5354,51 +5562,55 @@ done:
  *              - middle and tail 
  *              - head, middle, and tail
  *              - head, multiple middles, and tail
+ * 
+ *              NOTE: Each page combination is tested with multiple partial 
+ *              page sizes for the heads and tails, ranging from 1 byte up 
+ *              to only 1 byte less than the page size. 
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language.
  *              
  *-------------------------------------------------------------------------
  */
 static int
-pb_test_page_combinations(bool cl_config)
+pb_test_page_combinations(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
     char                  filename[1024];
-    hid_t                 fapl_id        = H5I_INVALID_HID;
-    H5FD_t               *file_ptr       = NULL;
+    hid_t                 fapl_id         = H5I_INVALID_HID;
+    H5FD_t               *file_ptr        = NULL;
+    unsigned char        *write_buf       = NULL;
+    unsigned char        *read_buf        = NULL;
+    size_t                buf_size        = vfd_config.page_size * 64;
+    size_t                i               = 0;
+    size_t                page_size       = vfd_config.page_size;
+    size_t                partial_sizes[] = { 1,
+                                              page_size / 8,
+                                              page_size / 4,
+                                              page_size / 2,
+                                              page_size - 1 };
+    size_t                num_partial_sizes = sizeof(partial_sizes) / sizeof(partial_sizes[0]);
+    size_t                head_size;
+    size_t                tail_size;
+    size_t                middle_pages[]   = {5, 10, 25, 50, 64};
+    size_t                num_middle_pages = sizeof(middle_pages) / sizeof(middle_pages[0]);
+    size_t                middle_size;
+    size_t                rw_size;
+    size_t                page_num;
+    haddr_t               addr1;
+    haddr_t               addr2;
     int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "
-        "  ( ( page_size 4096 )" 
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 0 )"
-        "  )"
-        ")";
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ H5FD_PB_DEFAULT_TESTING_OFF
-    };
-    unsigned char        *write_buf    = NULL;
-    unsigned char        *read_buf     = NULL;
-    size_t                buf_size     = vfd_config.page_size * 6;
-    size_t                i            = 0;
 
     /* setup the target file name, and delete any existing instance */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
 
     /* Create a new fapl to use the page buffer file driver */
-
     fapl_id = H5Pcreate(H5P_FILE_ACCESS);
 
     if (H5I_INVALID_HID == fapl_id) {
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
@@ -5414,13 +5626,16 @@ pb_test_page_combinations(bool cl_config)
         PB_TEST_FAULT("set FAPL not PB\n");
     }
 
+    /* Open a file */
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(page_size * 96)) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
+
+    /* Allocate read and write buffer and fill write buffer with random characters */
     read_buf = (unsigned char *)malloc(buf_size);
     if (NULL == read_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
@@ -5438,55 +5653,95 @@ pb_test_page_combinations(bool cl_config)
     /***** HEAD AND TAIL *****/
     /*************************/
 
-    assert( vfd_config.page_size < buf_size );
+    /* Iterates different sizes of head pages */
+    for ( size_t hs = 0; hs < num_partial_sizes; hs++ )
+    {
+        /* Iterates different sizes of tail pages */
+        for ( size_t ts = 0; ts < num_partial_sizes; ts++ )
+        {
+            /* Set addrs for read and write */
+            head_size = partial_sizes[hs];
+            tail_size = partial_sizes[ts];
+            
+            rw_size = head_size + tail_size;
 
-    /****** Read test *****/
+            page_num = hs + ts;
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 10240, vfd_config.page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            addr1 = (page_size - head_size) * page_num;
+            addr2 = addr1 + page_size;
+    
 
-    /****** Write test *****/
+            /****** Read test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2000, vfd_config.page_size, write_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr1, rw_size, read_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
 
-    /***** validate write *****/
+            /****** Write test *****/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 2000, vfd_config.page_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, write_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
 
-    for ( i = 0; i < vfd_config.page_size; i++ ) {
+            /***** validate write *****/
 
-        if ( read_buf[i] != write_buf[i] )
-            PB_TEST_FAULT("write validation failed\n");
+            if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, read_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
+            if (memcmp(write_buf, read_buf, rw_size) != 0) 
+            {
+                PB_TEST_FAULT("read from file doesn't match data written\n");
+            }
+        }
     }
+
 
 
     /***************************/
     /***** HEAD AND MIDDLE *****/
     /***************************/
 
-    assert( 6144 < buf_size );
+    /* Iterate different sizes of head pages */
+    for ( size_t hs = 0; hs < num_partial_sizes; hs++ )
+    {
+        /* Set addrs for read and write */
+        head_size = partial_sizes[hs];
+        
+        rw_size = head_size + page_size;
 
-    /****** Read test *****/
+        page_num = hs + 25;
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 22528, 6144, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        addr1 = (page_size - head_size) * page_num;
+        addr2 = addr1 + page_size;
+    
 
-    /****** Write test *****/
+        /****** Read test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 18432, 6144, write_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr1, rw_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
 
-    /***** validate write *****/
+        /****** Write test *****/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 18432, 6144, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, write_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
 
-    for ( i = 0; i < 6144; i++ ) {
+        /***** validate write *****/
 
-        if ( read_buf[i] != write_buf[i] )
-            PB_TEST_FAULT("write validation failed\n");
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
+        if (memcmp(write_buf, read_buf, rw_size) != 0) 
+        {
+            PB_TEST_FAULT("read from file doesn't match data written\n");
+        }
     }
 
 
@@ -5494,27 +5749,44 @@ pb_test_page_combinations(bool cl_config)
     /***** MIDDLE AND TAIL *****/
     /***************************/
 
-    assert( 6144 < buf_size );
+    /* Iterate different sizes of tail pages */
+    for ( size_t ts = 0; ts < num_partial_sizes; ts++ )
+    {
+        /* Set addrs for read and write */
+        tail_size = partial_sizes[ts];
+        
+        rw_size = tail_size + page_size;
 
-    /****** Read test *****/
+        page_num = ts + 30;
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 32768, 6144, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        addr1 = (page_size - tail_size) * page_num;
+        addr2 = addr1 + page_size;
 
-    /****** Write test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24500, 6144, write_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        /****** Read test *****/
 
-    /***** validate write *****/
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr1, rw_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24500, 6144, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+        /****** Write test *****/
 
-    for ( i = 0; i < 6144; i++ ) {
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, write_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
 
-        if ( read_buf[i] != write_buf[i] )
-            PB_TEST_FAULT("write validation failed\n");
+        /***** validate write *****/
+
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, read_buf) < 0) 
+        {
+            PB_TEST_FAULT("couldn't read data from file\n");
+        }
+        if (memcmp(write_buf, read_buf, rw_size) != 0) 
+        {
+            PB_TEST_FAULT("read from file doesn't match data written\n");
+        }
     }
 
 
@@ -5522,55 +5794,101 @@ pb_test_page_combinations(bool cl_config)
     /***** HEAD, MIDDLE, AND TAIL *****/
     /**********************************/
 
-    assert( (vfd_config.page_size * 2) < buf_size );
+    /* Iterate different sizes of head pages */
+    for ( size_t hs = 0; hs < num_partial_sizes; hs++ )
+    {
+        /* Iterate different sizes of tail pages */
+        for ( size_t ts = 0; ts < num_partial_sizes; ts++ )
+        {
+            /* Set addrs for read and write */
+            head_size = partial_sizes[hs];
+            tail_size = partial_sizes[ts];
+            
+            rw_size = head_size + page_size + tail_size;
 
-    /****** Read test *****/
+            page_num = hs + 1 + ts + 35;
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 61440, vfd_config.page_size * 2, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            addr1 = (page_size - head_size) * page_num;
+            addr2 = addr1 + (page_size * 2);
 
-    /****** Write test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 47108, vfd_config.page_size * 2, write_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            /****** Read test *****/
 
-    /***** validate write *****/
+            if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr1, rw_size, read_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 47108, vfd_config.page_size * 2, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+            /****** Write test *****/
 
-    for ( i = 0; i < vfd_config.page_size * 2; i++ ) {
+            if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, write_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
 
-        if ( read_buf[i] != write_buf[i] )
-            PB_TEST_FAULT("write validation failed\n");
+            /***** validate write *****/
+
+            if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, read_buf) < 0) 
+            {
+                PB_TEST_FAULT("couldn't read data from file\n");
+            }
+            if (memcmp(write_buf, read_buf, rw_size) != 0) 
+            {
+                PB_TEST_FAULT("read from file doesn't match data written\n");
+            }
+        }
     }
-
 
     /********************************************/
     /***** HEAD, MULTIPLE MIDDLES, AND TAIL *****/
     /********************************************/
+    
+    /* Iterate different sizes of head pages */
+    for ( size_t hs = 0; hs < num_partial_sizes; hs++ )
+    {
+        /* Iterate different sizes of tail pages */
+        for ( size_t ts = 0; ts < num_partial_sizes; ts++ )
+        {
+            /* Iterate larger number of pages */
+            for ( size_t np = 0; np < num_middle_pages; np++ )
+            {
+                /* Set addrs for read and write */
+                head_size   = partial_sizes[hs];
+                tail_size   = partial_sizes[ts];
+                middle_size = middle_pages[np];
+                
+                rw_size = head_size + middle_size + tail_size;
 
-    assert( (vfd_config.page_size * 5) < buf_size );
+                addr1 = page_size - head_size;
+                addr2 = addr1 + page_size;
 
-    /****** Read test *****/
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 108544, vfd_config.page_size * 5, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+                /****** Read test *****/
 
-    /****** Write test *****/
+                if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr1, rw_size, read_buf) < 0) 
+                {
+                    PB_TEST_FAULT("couldn't read data from file\n");
+                }
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 79872, vfd_config.page_size * 5, write_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+                /****** Write test *****/
 
-    /***** validate write *****/
+                if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, write_buf) < 0) 
+                {
+                    PB_TEST_FAULT("couldn't read data from file\n");
+                }
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 79872, vfd_config.page_size * 5, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
+                /***** validate write *****/
 
-    for ( i = 0; i < vfd_config.page_size * 5; i++ ) {
-
-        if ( read_buf[i] != write_buf[i] )
-            PB_TEST_FAULT("write validation failed\n");
+                if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr2, rw_size, read_buf) < 0) 
+                {
+                    PB_TEST_FAULT("couldn't read data from file\n");
+                }
+                if (memcmp(write_buf, read_buf, rw_size) != 0) 
+                {
+                    PB_TEST_FAULT("read from file doesn't match data written\n");
+                }
+            }
+        }
     }
 
 
@@ -5624,51 +5942,40 @@ done:
  *              - multiple middles where two consecutive page exist in 
  *                the pb, but the first and last middles do not
  *              - multiple middles where alternating pages exist in the pb
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language.
  *              
  *-------------------------------------------------------------------------
  */
 static int
-pb_test_specific_cases(bool cl_config)
+pb_test_specific_cases(char *config_str, H5FD_pb_vfd_config_t vfd_config)
 {
-    char                  filename[1024];
-    hid_t                 fapl_id        = H5I_INVALID_HID;
-    H5FD_t               *file_ptr       = NULL;
-    int                   ret_value      = 0;
-    char                  config_str[] =
-        "( page_buffer "
-        "  ( ( page_size 4096 )" 
-        "    ( max_num_pages 64 )"
-        "    ( replacement_policy 0 )"
-        "  )"
-        ")";
-    H5FD_pb_vfd_config_t vfd_config =
-    {
-        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
-        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
-        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
-        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
-        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
-        /* fapl_id          = */ H5P_DEFAULT,
-        /* testing          = */ H5FD_PB_DEFAULT_TESTING_OFF
-    };
-    unsigned char        *setup_buf    = NULL;
-    unsigned char        *write_buf    = NULL;
-    unsigned char        *read_buf     = NULL;
-    size_t                partial_size = vfd_config.page_size / 2;
+    char           filename[1024];
+    hid_t          fapl_id       = H5I_INVALID_HID;
+    H5FD_t        *file_ptr      = NULL;
+    unsigned char *setup_buf     = NULL;
+    unsigned char *write_buf     = NULL;
+    unsigned char *read_buf      = NULL;
+    size_t         page_size     = vfd_config.page_size;
+    size_t         partial_size  = vfd_config.page_size / 2;
+    size_t         request_size;
+    size_t         addr;
+    size_t         setup_addr;
+    haddr_t       *invalid_page      = NULL;
+    int            ret_value    = 0;
 
     /* setup the target file name, and delete any existing instance */
-
     h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
 
     /* Create a new fapl to use the page buffer file driver */
-
     fapl_id = H5Pcreate(H5P_FILE_ACCESS);
 
     if (H5I_INVALID_HID == fapl_id) {
         PB_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
         if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             PB_TEST_FAULT("can't load config string into fapl\n");
@@ -5684,108 +5991,265 @@ pb_test_specific_cases(bool cl_config)
         PB_TEST_FAULT("set FAPL not PB\n");
     }
 
-    /* Opens a file that does exist*/
+    /* Open a file */
     if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
                     fapl_id, HADDR_UNDEF))) 
         PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
 
-    /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.page_size * 64)) < 0 )
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(page_size * 64)) < 0 )
         PB_TEST_FAULT("couldn't set file eoa\n");
 
-
-    setup_buf = (unsigned char *)malloc(vfd_config.page_size);
+    /* Sets up file to be non-empty and to easily compare reads to */
+    setup_buf = (unsigned char *)malloc(page_size * 64);
     if (NULL == setup_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+    
+    for (size_t i = 0; i < (page_size * 64); i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
 
-    write_buf = (unsigned char *)malloc(vfd_config.page_size * 5);
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, page_size * 64, setup_buf) < 0)
+        PB_TEST_FAULT("couldn't write to file\n");
+
+    /* Allocate read and write buffers */
+    write_buf = (unsigned char *)malloc(page_size * 5);
     if (NULL == write_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
 
-    read_buf = (unsigned char *)malloc(vfd_config.page_size * 5);
+    read_buf = (unsigned char *)malloc(page_size * 5);
     if (NULL == read_buf) 
         PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
 
 
+    /****************************************************************/
+    /***** MIDDLES WITH ONLY THE FIRST PAGE EXISTING IN THE PB *****/
+    /****************************************************************/
 
-    /********************************************************/
-    /***** MIDDLES WITH FIRST PAGE EXISTING IN THE PB *****/
-    /********************************************************/
+    addr = 0;
+    request_size = page_size * 4;
 
     /* tail read to get the first page of the request in the page buffer */
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, vfd_config.page_size * 4, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
 
-    /****** Write test *****/
+    /***** Read Test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, vfd_config.page_size * 4, write_buf) < 0) 
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /* Validate read */
+    if ( memcmp(setup_buf, read_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
 
-    /********************************************************/
-    /***** MIDDLES WITH LAST PAGE EXISTING IN THE PB *****/
-    /********************************************************/
+
+    /***** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate write */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, setup_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if ( memcmp(setup_buf, write_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+    /* Ensure page was invalidated from write */
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /* Fill write_buf with different random characters to mix up what is being read and written */
+    for (size_t i = 0; i < (page_size *4); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+
+    /**************************************************************/
+    /***** MIDDLES WITH ONLY THE LAST PAGE EXISTING IN THE PB *****/
+    /**************************************************************/
+
+    addr = page_size;
+    setup_addr = page_size * 4;
 
     /* tail read to get the last page of the request in the page buffer */
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size * 4, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, setup_addr, partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
 
-    /****** Write test *****/
+    /***** Read test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 4096, vfd_config.page_size * 4, write_buf) < 0) 
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate read */
+    if ( memcmp((setup_buf + addr), read_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+
+    /***** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate write */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, (setup_buf + addr)) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if ( memcmp((setup_buf + addr), write_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+
+    /* Ensure page was invalidated from write */
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, setup_addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /* Fill write_buf with different random characters to mix up what is being read and written */
+    for (size_t i = 0; i < (page_size *4); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+
+    /*********************************************************************************/
+    /***** MIDDLES WHERE FIRST AND LAST ARE IN PB BUT MIDDLE TWO PAGES ARE NOT *****/
+    /*********************************************************************************/
+
+    addr = page_size;
+    setup_addr = page_size * 4;
+
+    /* two tail reads to get the first and last page of the request in the page buffer */
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, setup_addr, partial_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+
+    /***** Read Test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate read */
+    if ( memcmp((setup_buf + addr), read_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+
+    /***** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate write */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, (setup_buf + addr)) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if ( memcmp((setup_buf + addr), write_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+    /* Ensure pages were invalidated from the write */
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, setup_addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /* Fill write_buf with different random characters to mix up what is being read and written */
+    for (size_t i = 0; i < (page_size *4); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
 
 
     /*********************************************************************************/
     /***** MIDDLES WHERE FIRST AND LAST ARE NOT IN PB BUT TWO MIDDLE PAGES ARE *****/
     /*********************************************************************************/
 
+    addr = page_size;
+    setup_addr = page_size * 2;
+
     /* two tail reads to get the middle two pages of the request in the page buffer */
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 12288, partial_size, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, setup_addr, partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_size, read_buf) < 0) 
-        PB_TEST_FAULT("couldn't read data from file\n");
-
-
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8192, vfd_config.page_size * 4, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (setup_addr + page_size), partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
 
-    /****** Write test *****/
+    /***** Read Test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 8192, vfd_config.page_size * 4, write_buf) < 0) 
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
+    /* Validate read */
+    if ( memcmp((setup_buf + addr), read_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+
+    /***** Write test *****/
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, write_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate write */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, (setup_buf + addr)) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if ( memcmp((setup_buf + addr), write_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+    /* Ensure pages were invalidated from the write */
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, setup_addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, (setup_addr + page_size))) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+
+
+    /* Fill write_buf with different random characters to mix up what is being read and written */
+    for (size_t i = 0; i < (page_size *4); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+        
 
     /**************************************************************/
     /***** MIDDLES TEST WHERE ALTERNATING PAGES ARE IN THE PB *****/
     /**************************************************************/
 
+    addr = page_size * 4;
+    setup_addr = page_size * 6;
+
     /* two tail reads to get the first and third page of the request in the page buffer */
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, partial_size, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
-    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 24576, partial_size, read_buf) < 0) 
+    if(H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, setup_addr, partial_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
 
 
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, vfd_config.page_size * 4, read_buf) < 0) 
+    /***** Read Test *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, read_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate read */
+    if ( memcmp((setup_buf + addr), read_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
 
 
     /****** Write test *****/
 
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 16384, vfd_config.page_size * 4, write_buf) < 0) 
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, write_buf) < 0) 
         PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Validate write */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, addr, request_size, (setup_buf + addr)) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    if ( memcmp((setup_buf + addr), write_buf, request_size) != 0 )
+        PB_TEST_FAULT("data read from file doesn't match file data\n");
+
+
+    /* Ensure pages were invalidated from the write */
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
+    if ( (invalid_page = H5FD__pb_rp_invalid_check(file_ptr, setup_addr)) != NULL )
+        PB_TEST_FAULT("invalid page was found in page buffer.\n");
 
 
 
@@ -5809,9 +6273,6 @@ done:
         H5E_END_TRY
     }
 
-    if (setup_buf) 
-        free(setup_buf);
-
     if (write_buf) 
         free(write_buf);
     
@@ -5823,13 +6284,977 @@ done:
 } /* end pb_test_specific_cases */
 
 
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_invalid_config
+ *
+ * Purpose:     Tests the page buffer correctly fails when the 
+ *              configuration data is invalid.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Sets up page buffer configuration parameters and calls 
+ *              pb_test_invalid_config_helper() to verify that invalid page
+ *              buffer configuration data will fail. 
+ *              
+ *              The tests are as follows:
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid page sizes.
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid max number of pages the page buffer can 
+ *                store.
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid replacement policies.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.             
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_invalid_config(bool cl_config)
+{
+    size_t  page_size[]    = {512, 0, 128, 511, 1000, 102400, 3145728, 34603008, 67108864};
+    size_t  max_pages[]    = {8, 0, 4, 5, 50, 1000, 2050, 3072};
+    int32_t rp[]           = {0, -1, 2};
+    size_t  num_page_sizes = sizeof(page_size) / sizeof(page_size[0]);
+    size_t  num_max_pages  = sizeof(max_pages) / sizeof(max_pages[0]);
+    int32_t num_rp         = sizeof(rp) / sizeof(rp[0]);
+
+    int     ret_value           = 0;
+
+
+    /* Iterate through invalid parameters */
+    for ( size_t i = 0; i < num_page_sizes; i++ )
+    {
+        if ( pb_test_invalid_config_helper(cl_config, page_size[i], max_pages[0], rp[0]) < 0 )
+            PB_TEST_FAULT("Failed to correctly handle invalid page_size\n");
+    }
+    for ( size_t i = 0; i < num_max_pages; i++ )
+    {
+        if ( pb_test_invalid_config_helper(cl_config, page_size[0], max_pages[i], rp[0]) < 0 )
+            PB_TEST_FAULT("Failed to correctly handle invalid max_num_pages\n");
+    }
+    for ( int32_t i = 0; i < num_rp; i++ )
+    {
+        if ( pb_test_invalid_config_helper(cl_config, page_size[0], max_pages[0], rp[i]) < 0 )
+            PB_TEST_FAULT("Failed to correctly handle invalid rp\n");
+    }
+
+
+done:
+
+    return ret_value;
+
+} /* end pb_test_invalid_config */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_invalid_config_helper
+ *
+ * Purpose:     Tests that the page buffer correctly fails when the 
+ *              configuration data is invalid.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Is called by pb_test_invalid_config() that sets up the 
+ *              configuration parameters that are tested in this function 
+ *              to ensure invalid configuration data fails correctly.
+ *              
+ *              The tests are as follows:
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid page sizes.
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid max number of pages the page buffer can 
+ *                store.
+ *              - Valid configuration data to ensure it is accepted.
+ *              - Loops invalid replacement policies.
+ *              
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_invalid_config_helper(bool cl_config, size_t page_size, size_t max_pages, int32_t rp)
+{
+    char    filename[1024];
+    hid_t   fapl_id             = H5I_INVALID_HID;
+    H5FD_t *file_ptr            = NULL;
+    char    config_str[256];
+
+    int     ret_value = 0;
+
+    /* Set up configuration for LRU replacement policy */
+    if ( cl_config )
+    {
+        snprintf(config_str, sizeof(config_str),
+            "( page_buffer "
+            "  ( ( page_size %zu )"
+            "    ( max_num_pages %zu )"
+            "    ( replacement_policy %d )"
+            "    ( testing 1 )"
+            "  )"
+            ")",
+            page_size,
+            max_pages,
+            rp
+        );
+    }
+
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ page_size,
+        /* max_num_pages    = */ max_pages,
+        /* rp               = */ rp,
+        /* fapl_id          = */ H5P_DEFAULT,
+        /* testing          = */ TRUE
+    };
+
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+
+    /* Create a new fapl to use the page buffer file driver */
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if ( cl_config ) {
+
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
+            PB_TEST_FAULT("can't load config string into fapl\n");
+        }
+    } else {
+
+        if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+            PB_TEST_FAULT("can't set pb FAPL\n");
+        }
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    H5E_BEGIN_TRY
+    {
+        /**
+         * Attempts to open a file with invalid page buffer configuration data
+         * NOTE: some iterations have a valid configuration to ensure no
+         * false positives in the test. 
+         */
+        file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, fapl_id, HADDR_UNDEF);
+    }
+    H5E_END_TRY
+    
+    /* If the valid parameters failed to open the file, throw an error */
+    if ( page_size == 512 && max_pages == 8 && rp == 0 )
+    {
+        if ( file_ptr == NULL )
+        {
+            PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+        }
+    }
+    /* If the invalid parameters did open the file, throw an error */
+    else
+    {
+        if ( file_ptr )
+        {
+            PB_TEST_FAULT("Opened a file with invalid data, should have failed but didn't.\n");
+        }
+    }
+
+
+done:
+
+    H5E_BEGIN_TRY
+    {
+        H5Pclose(fapl_id);
+        H5FDclose(file_ptr);
+    }
+    H5E_END_TRY
+
+
+    return ret_value;
+
+} /* pb_test_invalid_config_helper() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_invalid_addrs_and_buffs
+ *
+ * Purpose:     Tests proper error handling when the addrs and buffers are
+ *              invalid.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Verifies that invalid addrs, sizes, and buffers for reads
+ *              and writes will correctly fail. 
+ *              
+ *              The tests are as follows for both read and write requests:
+ *              - Read or write buffer pointer is NULL.
+ *              - File pointer is NULL.
+ *              - dxpl_id is an invalid id.
+ *              - When addr + size exceeds the EOA of the file
+ *              - When addr + size exceeds the EOA of the file, by only 
+ *                1 byte.
+ *              - When the addr itself is beyond the EOA of the file.
+ *              - The size of the request is 0.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_invalid_addrs_and_buffs(bool cl_config)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id      = H5I_INVALID_HID;
+    H5FD_t               *file_ptr     = NULL;
+    char                  config_str[] =
+        "( page_buffer "
+        "  ( ( page_size 4096 )" 
+        "    ( max_num_pages 64 )"
+        "    ( replacement_policy 0 )"
+        "  )"
+        ")";
+    H5FD_pb_vfd_config_t vfd_config =
+    {
+        /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+        /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+        /* page_size        = */ H5FD_PB_DEFAULT_PAGE_SIZE,
+        /* max_num_pages    = */ H5FD_PB_DEFAULT_MAX_NUM_PAGES,
+        /* rp               = */ H5FD_PB_DEFAULT_REPLACEMENT_POLICY,
+        /* fapl_id          = */ H5P_DEFAULT,
+        /* testing          = */ H5FD_PB_DEFAULT_TESTING_OFF
+    };
+    unsigned char        *setup_buf         = NULL;
+    unsigned char        *valid_buf         = NULL;
+    unsigned char        *zero_buf          = NULL;
+    size_t                page_size    = H5FD_PB_DEFAULT_PAGE_SIZE;
+    size_t                partial_size = vfd_config.page_size / 2;
+    herr_t                ret; 
+    int                   ret_value    = 0;
+
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[16], vfd_config.fapl_id, filename, 1024);
+
+    /* Create a new fapl to use the page buffer file driver */
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if ( cl_config ) {
+
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
+            PB_TEST_FAULT("can't load config string into fapl\n");
+        }
+    } else {
+
+        if (H5Pset_fapl_pb(fapl_id, &vfd_config) < 0) {
+            PB_TEST_FAULT("can't set pb FAPL\n");
+        }
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+
+    /***** Sets up file to be non-empty *****/
+
+    setup_buf = (unsigned char *)malloc(page_size);
+    if (NULL == setup_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+    
+    for (size_t i = 0; i < page_size; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(page_size * 4)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, page_size, setup_buf) < 0)
+        PB_TEST_FAULT("couldn't write create_file to file\n");
+
+
+    /* Allocate a valid buffer for testing */
+    valid_buf = (unsigned char *)malloc(page_size);
+    if (NULL == valid_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+
+    /* Allocate a buffer for testing */
+    zero_buf = (unsigned char *)malloc(page_size);
+    if (NULL == zero_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+
+    /* Fill zero_buf with 0s for easy verification */
+    for (size_t i = 0; i < page_size; i++)
+        zero_buf[i] = 0;
+
+    
+    /*********************************************************/
+    /***** TEST READ WITH BUFFER BEING NULL, SHOULD FAIL *****/
+    /*********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, NULL);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle NULL buffer error correctly\n");
+
+
+    /**********************************************************/
+    /***** TEST WRITE WITH BUFFER BEING NULL, SHOULD FAIL *****/
+    /**********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, NULL);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle NULL buffer error correctly\n");
+
+
+    /***************************************************************/
+    /***** TEST READ WITH FILE POINTER BEING NULL, SHOULD FAIL *****/
+    /***************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(NULL, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle file NULL error correctly\n");
+
+
+    /****************************************************************/
+    /***** TEST WRITE WITH FILE POINTER BEING NULL, SHOULD FAIL *****/
+    /****************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(NULL, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle file NULL error correctly\n");
+
+
+    /******************************************************/
+    /***** TEST READ WITH INVALID H5P ID, SHOULD FAIL *****/
+    /******************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5I_INVALID_HID, 0, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle invalid ID error correctly\n");
+
+
+    /*******************************************************/
+    /***** TEST WRITE WITH INVALID H5P ID, SHOULD FAIL *****/
+    /*******************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5I_INVALID_HID, 0, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle invalid ID error correctly\n");
+
+
+    /*********************************************************************/
+    /***** TEST READ WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /*********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (page_size * 4) - 1, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST WRITE WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (page_size * 4) - 1, partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /*********************************************************************/
+    /***** TEST READ WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /*********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (page_size * 4) - (partial_size - 1), 
+                                                                                partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST WRITE WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (page_size * 4) - (partial_size - 1), 
+                                                                                partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************/
+    /***** TEST READ WHEN ADDR IS BEYOND EOA, SHOULD FAIL *****/
+    /**********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, page_size * 5, 
+                                                            partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle error correctly\n");
+
+
+    /***********************************************************/
+    /***** TEST WRITE WHEN ADDR IS BEYOND EOA, SHOULD FAIL *****/
+    /***********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, page_size * 5, 
+                                                            partial_size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        PB_TEST_FAULT("Did not handle error correctly\n");
+
+
+    /********************************************************************************/
+    /***** TEST READ WHEN SIZE IS 0, SHOULD SUCCEED BUT BUFFER WILL BE EMPTY *****/
+    /********************************************************************************/
+
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        PB_TEST_FAULT("Zero sized read failed\n");
+    }
+
+    /* Ensure no data was read into zero_buf */
+    if (memcmp(setup_buf, zero_buf, page_size) != 0) 
+    {
+        for ( size_t i = 0; i < page_size; i++ )
+        {
+            if ( zero_buf[i] != 0 )
+            {
+                PB_TEST_FAULT("zero_buf modified during zero-size read\n");
+            }
+        }
+    }
+    else
+    {
+        PB_TEST_FAULT("Data read when size of read is 0\n");
+    }
+
+
+    /***********************************************************************************/
+    /***** TEST WRITE WHEN SIZE IS 0, SHOULD SUCCEED BUT NOTHING WILL BE WRITTEN *****/
+    /***********************************************************************************/
+
+    if (( ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        PB_TEST_FAULT("Zero sized write failed\n");
+    }
+
+    /* Verify the zero sized write didn't actually write any data */
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, page_size, valid_buf)) < 0 )
+    {
+        PB_TEST_FAULT("Zero sized read failed\n");
+    }
+    else
+    {
+        if (memcmp(setup_buf, valid_buf, page_size) != 0) 
+        {
+            PB_TEST_FAULT("Data was written when size of write was 0\n");
+        }
+    }
+
+
+    if (H5Pclose(fapl_id) < 0) {
+        PB_TEST_FAULT("can't close fapl\n");
+    }
+
+    if (H5FDclose(file_ptr) < 0) {
+        PB_TEST_FAULT("can't close file\n");
+    }
+
+done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+    if ( setup_buf )
+    {
+        free(setup_buf);
+    }
+    if ( valid_buf )
+    {
+        free(valid_buf);
+    }
+    if ( zero_buf )
+    {
+        free(zero_buf);
+    }
+
+
+    return ret_value;
+
+} /* end pb_test_invalid_addrs_and_buffs() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_using_env_var
+ *
+ * Purpose:     Creates a file and does a write and read test by using the
+ *              configuration language set by the environment variables,
+ *              HDF5_DRIVER and HDF5_DRIVER_CONFIG.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Must first close the HDF5 library to set the environment
+ *              variables, HDF5_DRIVER and HDF5_DRIVER_CONFIG. Re-opens the
+ *              library and double checks that the environment variables 
+ *              are correctly set. 
+ * 
+ *              Creates a file, and tests the write and read function by 
+ *              writing a full page (middle), reading the same page, and
+ *              comparing the write and read buffers to ensure data is the
+ *              same.
+ * 
+ *              NOTE: This test is only called if the calling function,
+ *              test_pb()'s parameter bool cl_config is TRUE.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int 
+pb_test_using_env_var(void)
+{
+    char           filename[1024];
+    hid_t          fapl_id        = H5I_INVALID_HID;
+    H5FD_t        *file_ptr       = NULL;
+    int            ret_value      = 0;
+    unsigned char *page     = NULL;
+    unsigned char *read_buf = NULL;
+    const char    *vfd_name = "page_buffer";
+    const char    *returned_env_var = NULL;
+    char           config_str[] =
+        "( page_buffer "
+        "  ( ( page_size 4096 )" 
+        "    ( max_num_pages 64 )"
+        "    ( replacement_policy 0 )"
+        "  )"
+        ")";
+    bool           env_set = FALSE;
+
+
+    /* Close the library to set the environment variables before reopening the library */
+    H5close();
+
+    /* Set environment variable */
+    if ( setenv(HDF5_DRIVER, vfd_name, 1) != 0 )
+        PB_TEST_FAULT("failed to set environment variable\n");
+
+    if ( setenv(HDF5_DRIVER_CONFIG, config_str, 1) != 0 )
+        PB_TEST_FAULT("failed to set environment variable\n");
+
+
+    /* Re-open the library */
+    H5open();
+
+    /* Double check the environment variables were set correctly */
+    returned_env_var = getenv(HDF5_DRIVER);
+
+    if ( strcmp(vfd_name, returned_env_var) != 0 )
+        PB_TEST_FAULT("returned environment variable doesn't match\n");
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+
+    if ( strcmp(config_str, returned_env_var) != 0 )
+        PB_TEST_FAULT("returned environment variable doesn't match\n");
+
+
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[16], H5P_DEFAULT, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+
+    /* Opens a file that doesn't exist, should create the file */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        PB_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+    
+    /*****************************/
+    /***** Simple Write Test *****/
+    /*****************************/
+
+    page = (unsigned char *)malloc(H5FD_PB_DEFAULT_PAGE_SIZE);
+    if (NULL == page) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (page)\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < H5FD_PB_DEFAULT_PAGE_SIZE; i++)
+        page[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(H5FD_PB_DEFAULT_PAGE_SIZE)) < 0 )
+        PB_TEST_FAULT("couldn't set file eoa\n");
+
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
+                                        H5FD_PB_DEFAULT_PAGE_SIZE, page) < 0)
+        PB_TEST_FAULT("couldn't write data to file\n");
+
+    
+    /****************************/
+    /***** Simple Read Test *****/
+    /****************************/
+    
+    read_buf = (unsigned char *)malloc(H5FD_PB_DEFAULT_PAGE_SIZE);
+    if (NULL == read_buf) 
+        PB_TEST_FAULT("couldn't allocate memory for buffer (read_buf)\n");
+    
+    /* Read data from file */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0,  
+                                        H5FD_PB_DEFAULT_PAGE_SIZE, read_buf) < 0) 
+        PB_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compare data read with data written to ensure its the same */
+    if (memcmp(page, read_buf, H5FD_PB_DEFAULT_PAGE_SIZE) != 0) 
+        PB_TEST_FAULT("data read from file doesn't match data written\n");
+
+        
+    /**
+     * Close fapl_id and file_ptr, before closing library 
+     * to set environment variables to default values.
+     */
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+        fapl_id = H5I_INVALID_HID;
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+        file_ptr = NULL;
+    }
+
+    /* Close the library */
+    H5close();
+
+    /* Set environment variable back to default values */
+    if ( unsetenv(HDF5_DRIVER) != 0 )
+        PB_TEST_FAULT("failed to clear environment variable\n");
+
+    if ( unsetenv(HDF5_DRIVER_CONFIG) != 0 )
+        PB_TEST_FAULT("failed to clear environment variable\n");
+
+    env_set = FALSE;
+
+    /* Re-open the library */
+    H5open();
+
+    /* Double check the environment variables were set correctly */
+    returned_env_var = getenv(HDF5_DRIVER);
+
+    if ( returned_env_var )
+        PB_TEST_FAULT("environment variable not default\n");
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+
+    if ( returned_env_var )
+        PB_TEST_FAULT("environment variable not default\n");
+
+done:
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+    }
+
+    if (page) 
+        free(page);
+    
+    if (read_buf)
+        free(read_buf);
+
+    if ( env_set )
+    {
+        H5close();
+        unsetenv(HDF5_DRIVER);
+        unsetenv(HDF5_DRIVER_CONFIG);
+        H5open();
+    }
+
+    return ret_value;
+
+
+} /* end pb_test_using_env_var() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    pb_test_invalid_config_using_env_var
+ *
+ * Purpose:     Creates a file and does a write and read test by using the
+ *              configuration language set by the environment variables,
+ *              HDF5_DRIVER and HDF5_DRIVER_CONFIG.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Must first close the HDF5 library to set the environment
+ *              variables, HDF5_DRIVER and HDF5_DRIVER_CONFIG. Re-opens the
+ *              library and double checks that the environment variables 
+ *              are correctly set. 
+ * 
+ *              Creates a file, and tests the write and read function by 
+ *              writing a full page (middle), reading the same page, and
+ *              comparing the write and read buffers to ensure data is the
+ *              same.
+ * 
+ *              NOTE: This test is only called if the calling function,
+ *              test_pb()'s parameter bool cl_config is TRUE.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+pb_test_invalid_config_using_env_var(void)
+{
+    char           filename[1024];
+    hid_t          fapl_id        = H5I_INVALID_HID;
+    H5FD_t        *file_ptr       = NULL;
+    int            ret_value      = 0;
+    const char    *vfd_name = "page_buffer";
+    const char    *returned_env_var = NULL;
+    /* Uses an invalid page_size */
+    char           config_str[] =
+        "( page_buffer "
+        "  ( ( page_size 4000 )" 
+        "    ( max_num_pages 64 )"
+        "    ( replacement_policy 0 )"
+        "  )"
+        ")";
+    bool            env_set = FALSE;
+
+
+    /* Close the library to set the environment variables before reopening the library */
+    H5close();
+
+    /* Set environment variable */
+    if ( setenv(HDF5_DRIVER, vfd_name, 1) != 0 )
+        PB_TEST_FAULT("failed to set environment variable\n");
+
+    if ( setenv(HDF5_DRIVER_CONFIG, config_str, 1) != 0 )
+        PB_TEST_FAULT("failed to set environment variable\n");
+
+    env_set = TRUE;
+
+    /* Re-open the library */
+    H5open();
+
+    /* Double check the environment variables were set correctly */
+    returned_env_var = getenv(HDF5_DRIVER);
+
+    if ( strcmp(vfd_name, returned_env_var) != 0 )
+        PB_TEST_FAULT("returned environment variable doesn't match\n");
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+
+    if ( strcmp(config_str, returned_env_var) != 0 )
+        PB_TEST_FAULT("returned environment variable doesn't match\n");
+
+
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[16], H5P_DEFAULT, filename, 1024);
+    HDremove(filename);
+
+
+    /* Create a new fapl to use the page buffer file driver */
+
+    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+
+    if (H5I_INVALID_HID == fapl_id) {
+        PB_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_PB) {
+        PB_TEST_FAULT("set FAPL not PB\n");
+    }
+
+    H5E_BEGIN_TRY
+    {
+        /* Attempts to open a file with invalid page buffer configuration data */
+        file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, fapl_id, HADDR_UNDEF);
+    }
+    H5E_END_TRY
+
+    if ( file_ptr )
+    {
+        PB_TEST_FAULT("Opened a file with invalid data, should have failed but didn't.\n");
+    }
+
+
+    /**
+     * Close fapl_id and file_ptr, before closing library 
+     * to set environment variables to default values.
+     */
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+        fapl_id = H5I_INVALID_HID;
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+        file_ptr = NULL;
+    }
+
+    /* Close the library */
+    H5close();
+
+    /* Set environment variable back to default values */
+    if ( unsetenv(HDF5_DRIVER) != 0 )
+        PB_TEST_FAULT("failed to clear environment variable\n");
+
+    if ( unsetenv(HDF5_DRIVER_CONFIG) != 0 )
+        PB_TEST_FAULT("failed to clear environment variable\n");
+
+    env_set = FALSE;
+
+    /* Re-open the library */
+    H5open();
+
+    /* Double check the environment variables were set correctly */
+    returned_env_var = getenv(HDF5_DRIVER);
+
+    if ( returned_env_var )
+        PB_TEST_FAULT("environment variable not default\n");
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+
+    if ( returned_env_var )
+        PB_TEST_FAULT("environment variable not default\n");
+
+
+done:
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+    }
+
+    if ( env_set )
+    {
+        H5close();
+        unsetenv(HDF5_DRIVER);
+        unsetenv(HDF5_DRIVER_CONFIG);
+        H5open();
+    }
+
+    return ret_value;
+
+
+} /* end pb_test_invalid_config_using_env_var() */
+
 
 /*-------------------------------------------------------------------------
  * Function:    test_pb
  *
  * Purpose:     Tests the page buffer VFD
  *
- *              THe current version is derived from the splitter test 
+ *              The current version is derived from the splitter test 
  *              code, and is intended to show basic pass through 
  *              functionality.  It will have to be revised heavily 
  *              as the page buffer is implemented.
@@ -5840,19 +7265,82 @@ done:
  * Description:
  *              This test function uses the page buffer VFD to produce a 
  *              file and verify its contents.
- *
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ * 
  *-------------------------------------------------------------------------
  */
 
 static herr_t
 test_pb(bool cl_config)
 {
-    int                         buf[PB_DS_SIZE][PB_DS_SIZE];
-    hsize_t                     dims[2]       = {PB_DS_SIZE, PB_DS_SIZE};
-    hid_t                       child_fapl_id = H5I_INVALID_HID;
-    int                         i             = 0;
-    int                         j             = 0;
+    int                   buf[PB_DS_SIZE][PB_DS_SIZE];
+    hsize_t               dims[2]         = {PB_DS_SIZE, PB_DS_SIZE};
+    hid_t                 child_fapl_id   = H5I_INVALID_HID;
+    int                   i               = 0;
+    int                   j               = 0;
+    int                   testExpress;
     struct pb_dataset_def data;
+    char                 *config_str_ptr  = NULL;
+    char                  config_str[256];
+    bool                  test_all_sizes  = FALSE;
+    bool                  test_4m         = FALSE;
+    size_t               *page_sizes      = NULL;
+    size_t                max_num_pages[] = {8, 64, 128, 1024, 2048};
+    int32_t               rp_array[]      = {0, 1};
+    size_t                num_page_sizes;
+    size_t                num_max_pages;
+    int32_t               num_rp;
+
+
+/**
+ * Macros that determine how large of page sizes are tested.
+ * They are set to 0 by default, must set to 1 to test larger page sizes.
+ */
+#if PB_TEST_ALL_SIZES
+    test_all_sizes = TRUE;
+#else
+#if PB_TEST_4M
+    test_4m = TRUE;
+#endif /* PB_TEST_4M */
+#endif /* PB_TEST_ALL_SIZES */
+
+    testExpress = GetTestExpress();
+
+    /**
+     * To test up to 16 MiB page sizes (requires over 32 GiB RAM), 
+     *      PB_TEST_ALL_SIZES must be 1 and the env variable HDF5TestExpress must be 0.
+     * 
+     * To test up to 4 MiB page sizes (requires over 8 GiB RAM), 
+     *      PB_TEST_ALL_SIZES must be 1 and the env variable HDF5TestExpress must be 1, or
+     *      PB_TEST_4M must be 1 and the env variable HDF5TestExpress must 0 or 1.
+     * 
+     * Else tests up to 1 MiB page sizes (requires over 2 GiB RAM).
+     */
+                                      /* 1/2 KB  1 KB  4 KB  128 KB   1 MB     4 MB     16 MB */
+    static size_t pages_array_all[]     = {512, 1024, 4096, 131072, 1048576, 4194304, 16777216};
+    static size_t pages_array_4m[]      = {512, 1024, 4096, 131072, 1048576, 4194304};
+    static size_t pages_array_default[] = {512, 1024, 4096, 131072, 1048576};
+
+    if ( test_all_sizes && testExpress == 0 )
+    {
+        page_sizes = pages_array_all;
+        num_page_sizes = sizeof(pages_array_all) / sizeof(&pages_array_all[0]);
+    }
+    else if ( (test_all_sizes && testExpress == 1) || (test_4m && testExpress <= 1) )
+    {
+        page_sizes = pages_array_4m;
+        num_page_sizes = sizeof(pages_array_4m) / sizeof(&pages_array_4m[0]);
+    }
+    else
+    {
+        page_sizes = pages_array_default;
+        num_page_sizes = sizeof(pages_array_default) / sizeof(&pages_array_default[0]);
+    }
+
+    num_max_pages   = sizeof(max_num_pages) / sizeof(max_num_pages[0]);
+    num_rp         = sizeof(rp_array) / sizeof(rp_array[0]);
 
     if ( cl_config ) {
 
@@ -5912,37 +7400,134 @@ test_pb(bool cl_config)
 
     } /* end for child fapl definition */
 
-    /* Simple test for testing the write and read functions as a base case */
-    if ( pb_test_create_write_read(cl_config) < 0 ) {
+
+    /* Run tests iterating through increasing page sizes */
+    for ( size_t p = 0; p < num_page_sizes; p++ )
+    {
+        /* Run tests iterating through increasing number of max pages in page buffer */
+        for ( size_t m = 0; m < num_max_pages; m++ )
+        {
+            /**
+             * Skips tests if page size is 16 MiB and max num pages is 2048,
+             * because the test requires 32 GiB of RAM just for the page buffer.
+             * 
+             * TODO: add macro to turn on and off
+             * TODO: have largest page size and max num pages limited by
+             * expresstest level.
+             */
+            if ( page_sizes[p] == 16777216 && max_num_pages[m] == 2048 )
+            {
+                break;
+            }
+
+            /* Run tests iterating through replacement policies */
+            for ( int32_t r = 0; r < num_rp; r++ )
+            {
+                /* Set up configuration for LRU replacement policy */
+                if ( cl_config )
+                {
+                    snprintf(config_str, sizeof(config_str),
+                        "( page_buffer "
+                        "  ( ( page_size %zu )"
+                        "    ( max_num_pages %zu )"
+                        "    ( replacement_policy %d )"
+                        "    ( testing 1 )"
+                        "  )"
+                        ")",
+                        page_sizes[p],
+                        max_num_pages[m],
+                        rp_array[r]
+                    );
+
+                    config_str_ptr = config_str;
+                }
+
+                H5FD_pb_vfd_config_t vfd_config =
+                {
+                    /* magic            = */ H5FD_PB_CONFIG_MAGIC,
+                    /* version          = */ H5FD_CURR_PB_VFD_CONFIG_VERSION,
+                    /* page_size        = */ page_sizes[p],
+                    /* max_num_pages    = */ max_num_pages[m],
+                    /* rp               = */ rp_array[r],
+                    /* fapl_id          = */ H5P_DEFAULT,
+                    /* testing          = */ TRUE
+                };
+
+                /* Simple test for testing the write and read functions as a base case */
+                if ( pb_test_create_write_read(config_str_ptr, vfd_config) < 0 ) {
+                    TEST_ERROR;
+                }
+
+                /* Tests write and read of head, middle, and tail pages */
+                if ( pb_test_head_middle_tail(config_str_ptr, vfd_config) < 0 ) {
+                    TEST_ERROR;
+                }
+
+                /* The eviction and invalidation */
+                if ( r == 0 )
+                {
+                    if ( pb_test_rp_eviction_and_invalidation_lru(config_str_ptr, vfd_config) < 0 ) {
+                        TEST_ERROR;
+                    }
+                }
+                else if ( r == 1 )
+                {
+                    if ( pb_test_rp_eviction_and_invalidation_fifo(config_str_ptr, vfd_config) < 0 ) {
+                        TEST_ERROR;
+                    }
+                }
+
+                /* Tests different combinations of head, middle, and tail pages */
+                if ( pb_test_page_combinations(config_str_ptr, vfd_config) < 0 ) {
+                    TEST_ERROR;
+                }
+
+                /* Tests multiple middle requests where only specific pages exist in the page buffer */
+                if ( pb_test_specific_cases(config_str_ptr, vfd_config) < 0 ) {
+                    TEST_ERROR;
+                }
+            
+            } /* end for ( int32_t r = 0; r < rp_array; r++ ) */
+
+        } /* end for ( size_t m = 0; m < num_max_pages; m++ ) */
+    
+    } /* for ( size_t p = 0; p < num_page_sizes; p++ ) */
+
+    /* Tests proper error handling if the page buffer configuration data is not valid */
+    if ( pb_test_invalid_config(cl_config) < 0 ) 
+    {
         TEST_ERROR;
     }
 
-    /* Tests write and read of head, middle, and tail pages */
-    if ( pb_test_head_middle_tail(cl_config) < 0 ) {
+    /* Tests proper error handling for invalid addrs and buffers */
+    if ( pb_test_invalid_addrs_and_buffs(cl_config) < 0 ) 
+    {
         TEST_ERROR;
     }
 
-    /* The eviction and invalidation */
-    if ( pb_test_rp_eviction_and_invalidation(cl_config) < 0 ) {
-        TEST_ERROR;
-    }
-
-    if ( pb_test_rp_eviction_and_invalidation_fifo(cl_config) < 0 ) {
-        TEST_ERROR;
-    }
-
-    /* Tests different combinations of head, middle, and tail pages */
-    if ( pb_test_page_combinations(cl_config) < 0 ) {
-        TEST_ERROR;
-    }
-
-    /* Tests multiple middle requests where only specific pages exist in the page buffer */
-    if ( pb_test_specific_cases(cl_config) < 0 ) {
-        TEST_ERROR;
-    }
 
     if (H5Pclose(child_fapl_id) == FAIL) {
         TEST_ERROR;
+    }
+
+    /**
+     * If testing with configuration language, test if the CL can be set via the
+     * environment variables, and do a read and write test to ensure it works.
+     * Additionally, test that setting the environment variables with an invalid
+     * config will fail.
+     * 
+     * NOTE: These tests close the library to set the environment variables
+     * before re-opening the library.
+     */
+    if ( cl_config )
+    {
+        if ( pb_test_using_env_var() < 0 ) {
+            TEST_ERROR;
+        }
+
+        if ( pb_test_invalid_config_using_env_var() < 0 ) {
+            TEST_ERROR;
+        }
     }
 
     PASSED();
@@ -6148,6 +7733,9 @@ done:
  *
  *              Quick check of encryption VFD FAPL management -- should 
  *              be more complete.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
  *
  * Return:      Success:        0
  *              Failure:        -1
@@ -6267,15 +7855,26 @@ test_crypt_fapl(bool cl_config)
         }
     }
 
-    if (H5Pclose(fapl_id_cpy) < 0) {
-        CRYPT_TEST_FAULT("can't close fapl copy\n");
-    }
 
     if (H5Pclose(fapl_id) < 0) {
         CRYPT_TEST_FAULT("can't close fapl\n");
     }
 
+    if (H5Pclose(fapl_id_cpy) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl copy\n");
+    }
+
+
 done:
+
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5Pclose(fapl_id_cpy);
+        }
+        H5E_END_TRY
+    }
 
     return ret_value;
 
@@ -6287,6 +7886,9 @@ done:
  *
  * Purpose:     Tests the encryption VFD creating and opening a file that 
  *              doesn't exist.
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language. 
  *
  * Return:      Success:        0
  *              Failure:        -1
@@ -6294,39 +7896,10 @@ done:
  *-------------------------------------------------------------------------
  */
 static int
-crypt_test_create(bool cl_config)
+crypt_test_create(char *config_str, H5FD_crypt_vfd_config_t vfd_config)
 {
     hid_t                   fapl_id         = H5I_INVALID_HID;
     char                    filename[1024];
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  0 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
-    {
-        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
-        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 0,  
-        /* cipher_block_size      = */ 16,
-        /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
-        /* iv_size                = */ 16,
-        /* mode                   = */ 0,
-        /* fapl_id                = */ H5P_DEFAULT
-    };
     H5FD_t                * file_ptr          = NULL;
     int                     ret_value    = 0;
 
@@ -6340,9 +7913,9 @@ crypt_test_create(bool cl_config)
         CRYPT_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("can't load config string into fapl\n");
         }
     } else {
@@ -6357,9 +7930,9 @@ crypt_test_create(bool cl_config)
     }
 
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("information mismatch\n");
         }
 
@@ -6378,6 +7951,7 @@ crypt_test_create(bool cl_config)
                     fapl_id, HADDR_UNDEF)))
         CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
 
+
     if (H5Pclose(fapl_id) < 0) {
         CRYPT_TEST_FAULT("can't close fapl\n");
     }
@@ -6385,6 +7959,7 @@ crypt_test_create(bool cl_config)
     if (H5FDclose(file_ptr) < 0) {
         CRYPT_TEST_FAULT("can't close file\n");
     }
+
 
 done:
     
@@ -6396,249 +7971,106 @@ done:
         }
         H5E_END_TRY
     }
+
 
     return ret_value;
     
 } /* end crypt_test_create() */
 
 
-
-/*-------------------------------------------------------------------------
- * Function:    crypt_test_create_and_write
- *
- * Purpose:     Tests the encryption VFD creating and opening a file that 
- *              doesn't exist and writing to it. Only testing with one page
- *              of data per write call. 
- * 
- *              Using the AES256 cipher
- *
- * Return:      Success:        0
- *              Failure:        -1
- *
- *-------------------------------------------------------------------------
- */
-static int
-crypt_test_create_and_write(bool cl_config)
-{
-    hid_t                   fapl_id         = H5I_INVALID_HID;
-    char                    filename[1024];
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  0 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
-    {
-        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
-        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 0,  
-        /* cipher_block_size      = */ 16,
-        /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
-        /* iv_size                = */ 16,
-        /* mode                   = */ 0,
-        /* fapl_id                = */ H5P_DEFAULT
-    };
-    H5FD_t                * file_ptr           = NULL;
-    unsigned char         * one_page_write_buf = NULL;
-    unsigned char         * one_page_read_buf  = NULL;
-    int                     ret_value    = 0;
-
-    /* setup the target file name, and delete any existing instance */
-    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
-    HDremove(filename);
-
-    /* create and initialize FAPL for the encryption VFD */
-    
-    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
-        CRYPT_TEST_FAULT("can't create FAPL ID\n");
-    }
-
-    if ( cl_config ) {
-
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("can't load config string into fapl\n");
-        }
-    } else {
-
-        if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
-        }
-    }
-
-    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
-        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
-    }
-
-    if ( cl_config ) {
-        
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-
-    } else {
-        
-        if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-    }
-
-    /** 
-     * Opens a file that doesn't exist with the create flag. Should create the
-     * file, open it, and write the first two pages with the config data.
-     */
-    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
-                    fapl_id, HADDR_UNDEF)))
-        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
-
-
-
-    /********** Buffer setup to test write data to the file  **********/
-
-    /* Buffer to hold the data that will be used to test the write function */
-    one_page_write_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == one_page_write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
-
-    /* Fill the buffer with random characters to simulate data */
-    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
-        one_page_write_buf[i] = (unsigned char)rand() % 256;
-
-    /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.plaintext_page_size)) < 0 )
-        CRYPT_TEST_FAULT("couldn't set file eoa\n");
-    
-    /* Write the data to the file */
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, one_page_write_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't write data to file\n");
-
-
-    /* Buffer for the read test to store the page that was just written */
-    one_page_read_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == one_page_read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
-
-    /* Reads the data back that was just written */
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, one_page_read_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't read data from file\n");
-
-    /* Compare the data that was written to the data that was read */
-    if (memcmp(one_page_write_buf, one_page_read_buf, 
-                vfd_config.plaintext_page_size) != 0)
-        CRYPT_TEST_FAULT("data read from file does not match data written\n");
-
-    if (H5Pclose(fapl_id) < 0) {
-        CRYPT_TEST_FAULT("can't close fapl\n");
-    }
-
-    if (H5FDclose(file_ptr) < 0) {
-        CRYPT_TEST_FAULT("can't close file\n");
-    }
-
-done:
-    
-    if (ret_value < 0) {
-        H5E_BEGIN_TRY
-        {
-            H5Pclose(fapl_id);
-            H5FDclose(file_ptr);
-        }
-        H5E_END_TRY
-    }
-
-    if (one_page_write_buf)
-        free(one_page_write_buf);
-
-    if (one_page_read_buf)
-        free(one_page_read_buf);
-
-    return ret_value;
-    
-} /* end crypt_test_create_and_write() */
-
-
 /*-------------------------------------------------------------------------
  * Function:    crypt_test_verify_create_and_encryption
  *
- * Purpose:     Tests the encryption VFD creating and opening a file that 
- *              doesn't exist and writing one page to it. Then using POSIX
- *              calls to open the file manually, reads the entire file 
- *              (first two config pages and the third encrypted page) into
- *              a buffer. Another buffer is allocated and three pages are 
- *              manually created and stored in this new buffer. The 
- *              manually created pages are exactly what the pages in the
- *              file should be. These two buffers are then compared to 
- *              ensure the data in the file is correct (first page 
- *              configuration data, second page test encryption phrase, 
- *              third page encrypted data).
- * 
- *              Using the AES256 cipher
+ * Purpose:     Tests writing one page to the file and verifying it was
+ *              encrypted correctly.
  *
  * Return:      Success:        0
  *              Failure:        -1
+ * 
+ * Description: Opens a file and writes a page to it, then using POSIX 
+ *              calls to open the file manually, reads the entire file 
+ *              (first two config pages and the third encrypted page) into 
+ *              a buffer. 
+ *              
+ *              Another buffer is allocated and three pages are manually 
+ *              created and stored in this new buffer. The manually created 
+ *              pages are exactly what the pages in the file should be. 
+ *              
+ *              These two buffers are then compared to ensure the data in 
+ *              the file is correct (first page configuration data, second 
+ *              page test encryption phrase, third page encrypted data).
+ * 
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language. 
  *
  *-------------------------------------------------------------------------
  */
 static int
-crypt_test_verify_create_and_encryption(bool cl_config)
+crypt_test_verify_create_and_encryption(char *config_str, H5FD_crypt_vfd_config_t vfd_config)
 {
-    hid_t                   fapl_id         = H5I_INVALID_HID;
-    char                    filename[1024];
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  0 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
+    hid_t            fapl_id           = H5I_INVALID_HID;
+    char             filename[1024];
+    char             wrong_key_str[512]; 
+    char            *wrong_key_str_ptr = NULL;
+    H5FD_t          *file_ptr          = NULL;
+    unsigned char   *setup_buf         = NULL;
+    unsigned char   *read_buf          = NULL;
+    unsigned char   *compare_buf       = NULL;
+    int              fd                = -1;
+    gcry_cipher_hd_t handle;
+    unsigned char   *iv_second_page    = NULL;
+    unsigned char   *iv_third_page     = NULL;
+    const char      *test_phrase       = "Decryption works";
+    unsigned char   *test_phrase_buf   = NULL;
+    size_t           plaintext_size    = vfd_config.plaintext_page_size;
+    size_t           ciphertext_size   = vfd_config.ciphertext_page_size;
+    size_t           iv_size           = vfd_config.iv_size;
+    size_t           file_size         = 3 * ciphertext_size;
+    int              cipher            = vfd_config.cipher;
+    
+    int              ret_value         = 0;
+
+
+
+    H5FD_crypt_vfd_config_t wrong_key_config = 
     {
         /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
         /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 0,  
+        /* plaintext_page_size    = */ plaintext_size,
+        /* ciphertext_page_size   = */ ciphertext_size,
+        /* encryption_buffer_size = */ vfd_config.encryption_buffer_size,
+        /* cipher                 = */ vfd_config.cipher,  
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key                    = */ "test when this key isn't correct",
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
     };
-    H5FD_t                * file_ptr            = NULL;
-    unsigned char         * write_buf           = NULL;
-    unsigned char         * read_buf            = NULL;
-    unsigned char         * compare_buf         = NULL;
-    int                     fd                  = -1;
-    size_t                  size_of_3_page_file;
-    gcry_cipher_hd_t        handle;
-    unsigned char         * iv_second_page      = NULL;
-    unsigned char         * iv_third_page       = NULL;
-    const char            * test_phrase         = "Decryption works";
-    unsigned char         * test_phrase_buf     = NULL;
-    int                     ret_value           = 0;
+    if ( config_str )
+    {
+        snprintf(wrong_key_str, sizeof(wrong_key_str),
+            "( encryption_VFD "
+            "  ( ( plaintext_page_size  %zu )"
+            "    ( ciphertext_page_size %zu )"
+            "    ( encryption_buffer_size %zu )"
+            "    ( cipher %d )"
+            "    ( cipher_block_size 16 )"
+            "    ( key_size  32 )"
+            "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33A )"
+            "    ( iv_size 16 )"
+            "    ( mode 0 )"
+            "    ( underlying_VFD ( sec2 () ) )"
+            "  )"
+            ")",
+            plaintext_size,
+            ciphertext_size,
+            vfd_config.encryption_buffer_size,
+            vfd_config.cipher
+        );
+
+        wrong_key_str_ptr = wrong_key_str;
+    }
 
     /* setup the target file name, and delete any existing instance */
     h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
@@ -6649,9 +8081,9 @@ crypt_test_verify_create_and_encryption(bool cl_config)
         CRYPT_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("can't load config string into fapl\n");
         }
     } else {
@@ -6665,14 +8097,14 @@ crypt_test_verify_create_and_encryption(bool cl_config)
         CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("information mismatch\n");
         }
-
-    } else {
-
+    } 
+    else 
+    {
         if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
             CRYPT_TEST_FAULT("information mismatch\n");
         }
@@ -6692,22 +8124,44 @@ crypt_test_verify_create_and_encryption(bool cl_config)
     /********** Buffer setup to test writing data to the file  **********/
 
     /* Buffer to hold the data that will be used to test the write function */
-    write_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+    setup_buf = malloc(plaintext_size);
+    if (NULL == setup_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for setup_buf\n");
 
     /* Fill the buffer with random characters to simulate data */
-    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
-        write_buf[i] = (unsigned char)rand() % 256;
+    for (size_t i = 0; i < plaintext_size; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
 
     /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(vfd_config.plaintext_page_size)) < 0 )
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)plaintext_size) < 0 )
         CRYPT_TEST_FAULT("couldn't set file eoa\n");
 
     /* Write the data to the file */
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, write_buf) < 0)
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, setup_buf) < 0)
         CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+
+    /**
+     * Allocate read buffer.
+     * 
+     * NOTE: read buffer is the size of 3 ciphertext pages, due to 
+     * the using POSIX calls to read the entire file, including the 
+     * first two configuration pages and the IV blocks of the 
+     * ciphertext pages, to ensure correct data.
+     */
+    read_buf = malloc(3 * ciphertext_size);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+
+    /***** Decrypt and read the data back that was just written *****/
+
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    /* Compare the data that was written with the data that was read */
+    if (memcmp(setup_buf, read_buf, plaintext_size) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written\n");
 
     /* Close the file */
     if (H5FDclose(file_ptr) < 0) {
@@ -6718,23 +8172,15 @@ crypt_test_verify_create_and_encryption(bool cl_config)
     /*************************************************************************
      * Opens the newly created file using normal POSIX calls to read the first
      * two configuration pages and the third encrypted page into a buffer to 
-     * compare with manually created pages to ensure the data is correct.
+     * compare with manually created configuration and encrypted pages.
      *************************************************************************/
 
-    /* The size of all the pages file */
-    size_of_3_page_file = 3 * vfd_config.ciphertext_page_size;
-
-    /* Allocate buffer to read the entire file to */
-    read_buf = malloc(size_of_3_page_file);
-    if (NULL == read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
-
     /* Allocate buffer to store the IVs for the second and third pages */
-    iv_second_page = malloc(vfd_config.iv_size);
+    iv_second_page = malloc(iv_size);
     if (NULL == iv_second_page)
         CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
     
-    iv_third_page = malloc(vfd_config.iv_size);
+    iv_third_page = malloc(iv_size);
     if (NULL == iv_third_page)
         CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
     
@@ -6744,15 +8190,15 @@ crypt_test_verify_create_and_encryption(bool cl_config)
         CRYPT_TEST_FAULT("couldn't open file using POSIX calls\n");
 
     /* Read the entire file into read_buf */
-    if (pread(fd, read_buf, size_of_3_page_file, 0) != (ssize_t)size_of_3_page_file)
+    if (pread(fd, read_buf, file_size, 0) != (ssize_t)file_size)
         CRYPT_TEST_FAULT("couldn't read file using POSIX calls\n");
 
     /* Copies the IV for the second page to encrypt the manually made second page */
-    if (memcpy(iv_second_page, read_buf + vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+    if (memcpy(iv_second_page, read_buf + ciphertext_size, iv_size) == NULL)
         CRYPT_TEST_FAULT("couldn't copy second page's IV from read_buf\n");
 
     /* Copies the IV for the third page to encrypt the manually made third page */
-    if (memcpy(iv_third_page, read_buf + 2 * vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
+    if (memcpy(iv_third_page, read_buf + 2 * ciphertext_size, iv_size) == NULL)
         CRYPT_TEST_FAULT("couldn't copy third page's IV from read_buf\n");
 
     /* Close the file */
@@ -6768,16 +8214,17 @@ crypt_test_verify_create_and_encryption(bool cl_config)
      *************************************************************************/
 
     /* Allocate buffer to store the data for comparison */
-    compare_buf = malloc(size_of_3_page_file);
+    compare_buf = malloc(file_size);
     if (NULL == compare_buf)
         CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
 
 
     /* Manually create the first page and store it in the compare buf */
-    if (memset((void *)(compare_buf), '\0', vfd_config.ciphertext_page_size) == NULL)
+
+    if (memset((void *)(compare_buf), '\0', ciphertext_size) == NULL)
         CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
 
-    snprintf((char *)compare_buf, vfd_config.ciphertext_page_size,
+    snprintf((char *)compare_buf, ciphertext_size,
              "plaintext_page_size: %zu\n"
              "ciphertext_page_size: %zu\n"
              "encryption_buffer_size: %zu\n"
@@ -6798,13 +8245,11 @@ crypt_test_verify_create_and_encryption(bool cl_config)
 
 
     /* Manually create the second page and store it in the compare buf*/
-    if (memset((void *)(compare_buf + vfd_config.ciphertext_page_size), '\0', 
-                vfd_config.ciphertext_page_size) == NULL)
+
+    if (memset((void *)(compare_buf + ciphertext_size), '\0', ciphertext_size) == NULL)
         CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
 
-
-    test_phrase_buf = (unsigned char *)calloc(vfd_config.ciphertext_page_size, 
-                                                sizeof(unsigned char));
+    test_phrase_buf = (unsigned char *)calloc(ciphertext_size, sizeof(unsigned char));
     if ( NULL == test_phrase_buf ) 
         CRYPT_TEST_FAULT("couldn't allocate memory for test_phrase_buf\n");
 
@@ -6813,26 +8258,36 @@ crypt_test_verify_create_and_encryption(bool cl_config)
 
 
     /* Manually encrypt and write the second page into the compare buf */
-    if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
-                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
-        CRYPT_TEST_FAULT("couldn't open cipher handle\n");
+
+    /* If testing AES256 */
+    if ( cipher == 0 )
+    {
+        if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0) != 0 )
+            CRYPT_TEST_FAULT("couldn't open cipher handle\n");
+    }
+    /* If testing TWOFISH */
+    else if ( cipher == 1 )
+    {
+        if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, GCRY_CIPHER_MODE_CBC, 0) != 0 )
+            CRYPT_TEST_FAULT("couldn't open cipher handle (TWOFISH)\n");
+    }
+
     
     if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
         CRYPT_TEST_FAULT("couldn't set key\n");
 
     /* Stores the second page's IV into the compare buf */
-    if (memcpy((void *)(compare_buf + vfd_config.ciphertext_page_size), 
-                            iv_second_page, vfd_config.iv_size) == NULL)
+    if (memcpy((void *)(compare_buf + ciphertext_size), iv_second_page, iv_size) == NULL)
         CRYPT_TEST_FAULT("couldn't memcpy second page's IV to compare buf\n");
 
     if ( gcry_cipher_setiv(handle, iv_second_page, 16) != 0 )
         CRYPT_TEST_FAULT("couldn't set IV to handle for page 2\n");
 
     if ( gcry_cipher_encrypt(handle, 
-            compare_buf + vfd_config.ciphertext_page_size + vfd_config.iv_size,
-            vfd_config.plaintext_page_size, 
+            compare_buf + ciphertext_size + iv_size,
+            plaintext_size, 
             test_phrase_buf, 
-            vfd_config.plaintext_page_size) != 0 )
+            plaintext_size) != 0 )
         CRYPT_TEST_FAULT("couldn't encrypt second page\n");
 
     gcry_cipher_close(handle);  
@@ -6840,26 +8295,35 @@ crypt_test_verify_create_and_encryption(bool cl_config)
 
 
     /* Manually encrypt and write the created page (write_buf) into the compare buf*/
-    if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, 
-                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
-        CRYPT_TEST_FAULT("couldn't open cipher handle for page 3\n");
+
+    /* If testing AES256 */
+    if ( cipher == 0 )
+    {
+        if ( gcry_cipher_open(&handle, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_CBC, 0) != 0 )
+            CRYPT_TEST_FAULT("couldn't open cipher handle for page 3\n");
+    }
+    /* If testing TWOFISH */
+    else if ( cipher == 1 )
+    {
+        if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, GCRY_CIPHER_MODE_CBC, 0) != 0 )
+            CRYPT_TEST_FAULT("couldn't open cipher handle for page 3 (TWOFISH)\n");
+    }
 
     if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
         CRYPT_TEST_FAULT("couldn't set key the for page 3\n");
 
     /* Stores the third page's IV into the compare buf */
-    if (memcpy((void *)(compare_buf + 2 * vfd_config.ciphertext_page_size), 
-                            iv_third_page, vfd_config.iv_size) == NULL)
+    if (memcpy((void *)(compare_buf + 2 * ciphertext_size), iv_third_page, iv_size) == NULL)
         CRYPT_TEST_FAULT("couldn't memcpy third page's IV to compare buf\n");
 
     if ( gcry_cipher_setiv(handle, iv_third_page, 16) != 0 )
         CRYPT_TEST_FAULT("couldn't set IV to handle for page 3\n");
 
     if ( gcry_cipher_encrypt(handle, 
-            compare_buf + 2 * vfd_config.ciphertext_page_size + vfd_config.iv_size,
-            vfd_config.plaintext_page_size, 
-            write_buf, 
-            vfd_config.plaintext_page_size) != 0 )
+            compare_buf + 2 * ciphertext_size + iv_size,
+            plaintext_size, 
+            setup_buf, 
+            plaintext_size) != 0 )
         CRYPT_TEST_FAULT("couldn't encrypt third page\n");
 
     gcry_cipher_close(handle);
@@ -6871,9 +8335,64 @@ crypt_test_verify_create_and_encryption(bool cl_config)
      * compare_buf which holds the manually created data to ensure the data in
      * the file matches what it should be.
      */
-    if (memcmp(read_buf, compare_buf, size_of_3_page_file) != 0) {
+    if (memcmp(read_buf, compare_buf, file_size) != 0) {
         CRYPT_TEST_FAULT("pages read from file does not match manually made pages\n");
     }
+
+
+
+    /*************************************************************************/
+    /***** TESTS OPENING THE ENCRYPTED FILE WITH WRONG KEY (should fail) *****/
+    /*************************************************************************/
+
+    /* Update fapl to contain config data with wrong key */
+    if ( config_str ) {
+
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, wrong_key_str_ptr) < 0) {
+            CRYPT_TEST_FAULT("can't load config string into fapl\n");
+        }
+    } else {
+
+        if (H5Pset_fapl_crypt(fapl_id, &wrong_key_config) < 0) {
+            CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+        }
+    }
+
+    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+    }
+
+    if ( config_str ) {
+
+        if (compare_crypt_config_str(fapl_id, wrong_key_str_ptr) < 0) {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+    } 
+    else 
+    {
+        if (compare_crypt_config_info(fapl_id, &wrong_key_config) < 0) {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+    }
+
+    H5E_BEGIN_TRY
+    {
+        file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF);
+    }
+    H5E_END_TRY
+
+    if ( file_ptr )
+        CRYPT_TEST_FAULT("\n");
+
+
+
+
+    /***** End Tests *****/
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
 
 done:
     
@@ -6882,14 +8401,12 @@ done:
         {
             H5Pclose(fapl_id);
             H5FDclose(file_ptr);
-            if (fd >= 0)
-                close(fd);
         }
         H5E_END_TRY
     }
 
-    if (write_buf)
-        free(write_buf);
+    if (setup_buf)
+        free(setup_buf);
 
     if (compare_buf)
         free(compare_buf);
@@ -6913,13 +8430,15 @@ done:
 
 
 /*-------------------------------------------------------------------------
- * Function:    crypt_test_write_and_read_aes256
+ * Function:    crypt_test_write_and_read
  *
- * Purpose:     Generalized test function for writing 'num_pages' to the 
- *              file. This uses the AES256 cipher and tests the write and 
- *              read operations with a variable number of pages.
+ * Purpose:     Generalized test function for writing a varying number of 
+ *              pages to file and then reading those pages to ensure they
+ *              are correct.
  * 
- *              Using the AES256 cipher
+ *              If parameter config_str is not NULL, tests using 
+ *              configuration language. 
+ * 
  *
  * Return:      Success:        0
  *              Failure:        -1
@@ -6927,39 +8446,10 @@ done:
  *-------------------------------------------------------------------------
  */
 static int
-crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
+crypt_test_write_and_read(size_t num_pages, char *config_str, H5FD_crypt_vfd_config_t vfd_config)
 {
     hid_t                   fapl_id         = H5I_INVALID_HID;
     char                    filename[1024];
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  0 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
-    {
-        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
-        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 0,  
-        /* cipher_block_size      = */ 16,
-        /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
-        /* iv_size                = */ 16,
-        /* mode                   = */ 0,
-        /* fapl_id                = */ H5P_DEFAULT
-    };
     H5FD_t                * file_ptr        = NULL;
     unsigned char         * write_buf       = NULL;
     unsigned char         * read_buf        = NULL;
@@ -6967,6 +8457,7 @@ crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
     int                     ret_value       = 0;
 
     /* setup the target file name */
+
     h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
 
     /* create and initialize FAPL for the encryption VFD */
@@ -6975,9 +8466,9 @@ crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
         CRYPT_TEST_FAULT("can't create FAPL ID\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("can't load config string into fapl\n");
         }
     } else {
@@ -6991,9 +8482,9 @@ crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
         CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
     }
 
-    if ( cl_config ) {
+    if ( config_str ) {
 
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) {
             CRYPT_TEST_FAULT("information mismatch\n");
         }
 
@@ -7046,6 +8537,7 @@ crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
     if (memcmp(write_buf, read_buf, size_of_pages) != 0)
         CRYPT_TEST_FAULT("data read from file does not match data written\n");
 
+
     if (H5Pclose(fapl_id) < 0) {
         CRYPT_TEST_FAULT("can't close fapl\n");
     }
@@ -7053,6 +8545,7 @@ crypt_test_write_and_read_aes256(size_t num_pages, bool cl_config)
     if (H5FDclose(file_ptr) < 0) {
         CRYPT_TEST_FAULT("can't close file\n");
     }
+
 
 done:
     
@@ -7073,29 +8566,460 @@ done:
 
     return ret_value;
     
-} /* end crypt_test_write_and_read_aes256() */
+} /* end crypt_test_write_and_read() */
 
 
 /*-------------------------------------------------------------------------
- * Function:    crypt_test_create_and_write_twofish
+ * Function:    crypt_test_invalid_config
  *
- * Purpose:     Tests the encryption VFD creating and opening a file that 
- *              doesn't exist and writing to it. Only testing with one page
- *              of data per write call. 
- * 
- *              Using the TWOFISH cipher
+ * Purpose:     Tests that the encryption vfd correctly fails when the 
+ *              configuration data is invalid.
  *
  * Return:      Success:        0
  *              Failure:        -1
  *
+ * Description: Sets up encryption configuration parameters and calls
+ *              crypt_test_invalid_config_helper() to verify that invalid
+ *              encryption config data will fail.
+ *              
+ *              The tests are as follows:
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid plaintext page sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid ciphertext page sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid encryption buffer sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid ciphers
+ * 
+ *              The following tests are wrapped in a loop that iterates
+ *              through all valid ciphers to ensure each cipher is checked
+ *              with these invalid values:
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid cipher block sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid key sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid initialization vector (IV) sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid modes of operations.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ *              
  *-------------------------------------------------------------------------
  */
-static int
-crypt_test_create_and_write_twofish(bool cl_config)
+static int 
+crypt_test_invalid_config(bool cl_config)
 {
-    hid_t                   fapl_id         = H5I_INVALID_HID;
-    char                    filename[1024];
-    char vfd_cfg_str[] =
+
+    size_t  plaintext_sizes[]   = {4096, 0, 128, 511, 1000, 102400, 3145728, 34603008, 67108864};
+    size_t  ciphertext_sizes[]  = {4112, 0, 4096, 4111, 4113};
+    size_t  crypt_buf_sizes[]   = {65792, 0, 65791, 65793};
+    int32_t valid_ciphers[]     = {0, 1};
+    int32_t invalid_ciphers[]   = {-1, 2};
+    size_t  block_size_array[]  = {16, 0, 15, 17, 32};
+    size_t  key_size_array[]    = {32, 0, 16, 31, 33};
+    size_t  iv_size_array[]     = {16, 0, 15, 17, 32};
+    int32_t mode_array[]        = {0, -1, 1};
+
+    size_t  num_plaintexts      = sizeof(plaintext_sizes) / sizeof(plaintext_sizes[0]);
+    size_t  num_ciphertexts     = sizeof(ciphertext_sizes) / sizeof(ciphertext_sizes[0]);
+    size_t  num_buf_sizes       = sizeof(crypt_buf_sizes) / sizeof(crypt_buf_sizes[0]);
+    int32_t num_valid_ciphers   = sizeof(valid_ciphers) / sizeof(valid_ciphers[0]);
+    int32_t num_invalid_ciphers = sizeof(invalid_ciphers) / sizeof(invalid_ciphers[0]);
+    size_t  num_block_sizes     = sizeof(block_size_array) / sizeof(block_size_array[0]);
+    size_t  num_key_sizes       = sizeof(key_size_array) / sizeof(key_size_array[0]);
+    size_t  num_iv_sizes        = sizeof(iv_size_array) / sizeof(iv_size_array[0]);
+    int32_t num_modes           = sizeof(mode_array) / sizeof(mode_array[0]);
+
+
+    int     ret_value           = 0;
+
+
+    /**
+     * Each of the arrays with invalid parameters to test starts with a valid 
+     * parameter to ensure a valid configuration is correctly processed, and 
+     * then the invalid parameter is tested.
+     */
+
+
+    /* Iterate through invalid plaintext page sizes */
+    for ( size_t i = 0; i < num_plaintexts; i++ )
+    {
+        if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[i], 
+                                                        ciphertext_sizes[0], 
+                                                        crypt_buf_sizes[0],
+                                                        valid_ciphers[0],
+                                                        block_size_array[0],
+                                                        key_size_array[0],
+                                                        iv_size_array[0],
+                                                        mode_array[0]) < 0 )
+            CRYPT_TEST_FAULT("Failed to correctly handle invalid invalid plaintext page size\n");
+    }
+    /* Iterate through invalid ciphertext page sizes */
+    for ( size_t i = 0; i < num_ciphertexts; i++ )
+    {
+        if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                        ciphertext_sizes[i], 
+                                                        crypt_buf_sizes[0],
+                                                        valid_ciphers[0],
+                                                        block_size_array[0],
+                                                        key_size_array[0],
+                                                        iv_size_array[0],
+                                                        mode_array[0]) < 0 )
+            CRYPT_TEST_FAULT("Failed to correctly handle invalid invalid ciphertext page size\n");
+    }
+    /* Iterate through invalid encryption buffer sizes */
+    for ( size_t i = 0; i < num_buf_sizes; i++ )
+    {
+        if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                        ciphertext_sizes[0], 
+                                                        crypt_buf_sizes[i],
+                                                        valid_ciphers[0],
+                                                        block_size_array[0],
+                                                        key_size_array[0],
+                                                        iv_size_array[0],
+                                                        mode_array[0]) < 0 )
+            CRYPT_TEST_FAULT("Failed to correctly handle invalid invalid encryption buffer size\n");
+    }
+    /* Iterate through invalid ciphers */
+    for ( int32_t i = 0; i < num_invalid_ciphers; i++ )
+    {
+        if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                        ciphertext_sizes[0], 
+                                                        crypt_buf_sizes[0],
+                                                        invalid_ciphers[i],
+                                                        block_size_array[0],
+                                                        key_size_array[0],
+                                                        iv_size_array[0],
+                                                        mode_array[0]) < 0 )
+            CRYPT_TEST_FAULT("Failed to correctly handle invalid invalid ciphers\n");
+    }
+    
+    /**
+     * The following parameters are dependent on the cipher. Since AES256 and TWOFISH
+     * has the same values for these parameters, loop to test both ciphers
+     */
+    for ( int32_t c = 0; c < num_valid_ciphers; c++ )
+    {
+        /* Iterate through invalid cipher block sizes */
+        for ( size_t i = 0; i < num_block_sizes; i++ )
+        {
+            if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                            ciphertext_sizes[0], 
+                                                            crypt_buf_sizes[0],
+                                                            valid_ciphers[c],
+                                                            block_size_array[i],
+                                                            key_size_array[0],
+                                                            iv_size_array[0],
+                                                            mode_array[0]) < 0 )
+                CRYPT_TEST_FAULT("Failed to correctly handle invalid cipher block sizes\n");
+        }
+        /* Iterate through invalid key sizes */
+        for ( size_t i = 0; i < num_key_sizes; i++ )
+        {
+            if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                            ciphertext_sizes[0], 
+                                                            crypt_buf_sizes[0],
+                                                            valid_ciphers[c],
+                                                            block_size_array[0],
+                                                            key_size_array[i],
+                                                            iv_size_array[0],
+                                                            mode_array[0]) < 0 )
+                CRYPT_TEST_FAULT("Failed to correctly handle invalid key sizes\n");
+        }
+        /* Iterate through invalid initialization vector sizes */
+        for ( size_t i = 0; i < num_iv_sizes; i++ )
+        {
+            if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                            ciphertext_sizes[0], 
+                                                            crypt_buf_sizes[0],
+                                                            valid_ciphers[c],
+                                                            block_size_array[0],
+                                                            key_size_array[0],
+                                                            iv_size_array[i],
+                                                            mode_array[0]) < 0 )
+                CRYPT_TEST_FAULT("Failed to correctly handle invalid iv sizes\n");
+        }
+        /* Iterate through invalid modes of operation */
+        for ( int32_t i = 0; i < num_modes; i++ )
+        {
+            if (crypt_test_invalid_config_helper(cl_config, plaintext_sizes[0], 
+                                                            ciphertext_sizes[0], 
+                                                            crypt_buf_sizes[0],
+                                                            valid_ciphers[c],
+                                                            block_size_array[0],
+                                                            key_size_array[0],
+                                                            iv_size_array[0],
+                                                            mode_array[i]) < 0 )
+                CRYPT_TEST_FAULT("Failed to correctly handle invalid modes\n");
+        }
+    
+    } /* end for ( int32_t i = 0; i < num_valid_ciphers; i++ ) */
+
+
+done:
+
+    return ret_value;
+
+} /* end crypt_test_invalid_config() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_invalid_config_helper
+ *
+ * Purpose:     Tests that the encryption vfd correctly fails when the 
+ *              configuration data is invalid.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Is called by crypt_test_invalid_config() which sets up the
+ *              configuration parameters that are tested in this function
+ *              to ensure invalid config data fails correctly.
+ *              
+ *              The tests are as follows:
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid plaintext page sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid ciphertext page sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid encryption buffer sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid ciphers
+ * 
+ *              The following tests are wrapped in a loop that iterates
+ *              through all valid ciphers to ensure each cipher is checked
+ *              with invalid values:
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid cipher block sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid key sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid initialization vector (IV) sizes.
+ *              - Valid configuration data to ensure it accepts it.
+ *              - Loops invalid modes of operations.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int 
+crypt_test_invalid_config_helper(bool cl_config, size_t pt_size, size_t ct_size, size_t buf_size, 
+                            int32_t cipher, size_t block_size, size_t key_size, size_t iv_size, int32_t mode)
+{
+    char    filename[1024];
+    hid_t   fapl_id         = H5I_INVALID_HID;
+    H5FD_t *file_ptr        = NULL;
+    char    config_str[512];
+    herr_t  ret;
+
+    int     ret_value           = 0;
+
+
+    if ( cl_config )
+    {
+        snprintf(config_str, sizeof(config_str),
+            "( encryption_VFD "
+            "  ( ( plaintext_page_size  %zu )"
+            "    ( ciphertext_page_size %zu )"
+            "    ( encryption_buffer_size %zu )"
+            "    ( cipher %d )"
+            "    ( cipher_block_size %zu )"
+            "    ( key_size  %zu )"
+            "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
+            "    ( iv_size %zu )"
+            "    ( mode %d )"
+            "    ( underlying_VFD ( sec2 () ) )"
+            "  )"
+            ")",
+            pt_size,
+            ct_size,
+            buf_size,
+            cipher,
+            block_size,
+            key_size,
+            iv_size,
+            mode
+        );
+    }
+
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ pt_size,
+        /* ciphertext_page_size   = */ ct_size,
+        /* encryption_buffer_size = */ buf_size,
+        /* cipher                 = */ cipher,  
+        /* cipher_block_size      = */ block_size,
+        /* key_size               = */ key_size,
+        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* iv_size                = */ iv_size,
+        /* mode                   = */ mode,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+
+
+/* setup the target file name */
+    
+    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+
+    /* create and initialize FAPL for the encryption VFD */
+    
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if ( cl_config ) {
+
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
+            CRYPT_TEST_FAULT("can't load config string into fapl\n");
+        }
+    } else 
+    {
+        H5E_BEGIN_TRY
+        {
+            ret = H5Pset_fapl_crypt(fapl_id, &vfd_config);
+        }
+        H5E_END_TRY
+    }
+
+    /**
+     * If testing with H5FD_crypt_vfd_config_t and not configuration language, 
+     * H5Pset_fapl_crypt() should fail with invalid config data. Verify that is correct.
+     */
+    if ( ! cl_config )
+    {
+        if ( ret == SUCCEED )
+        {
+            /* If H5Pset_fapl_crypt succeeded and config data was invalid throw an error */
+            if ( pt_size != 4096 || ct_size != 4112 || buf_size != 65792 || (cipher != 0 && 
+                cipher != 1) || block_size != 16 || key_size != 32 || iv_size != 16 || mode != 0 )
+            {
+                CRYPT_TEST_FAULT("Should have failed, but succeeded to set fapl crypt with invalid config data\n");
+            }
+        }
+        else
+        {
+            if ( pt_size == 4096 && ct_size == 4112 && buf_size == 65792 && (cipher == 0 || 
+                cipher == 1) && block_size == 16 && key_size == 32 && iv_size == 16 && mode == 0 )
+                CRYPT_TEST_FAULT("Failed to set fapl crypt with valid config data\n");
+        }
+    }
+    /**
+     * If testing with configuration language, H5CL_load_vfd_config_str_into_fapl() 
+     * should succeed even with invalid config data, but should fail when attempting 
+     * to open the file. Verify that is correct.
+     */
+    else
+    {
+        if (H5Pget_driver(fapl_id) != H5FD_CRYPT) 
+        {
+            CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+        }
+
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) 
+        {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+
+        H5E_BEGIN_TRY
+        {
+            /**
+             * Attempts to open a file with invalid encryption configuration data
+             * NOTE: some iterations have a valid configuration to ensure no
+             * false positives in the test. 
+             */
+            file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, fapl_id, HADDR_UNDEF);
+        }
+        H5E_END_TRY
+
+        /* If the valid parameters failed to open throw an error */
+        if ( pt_size == 4096 && ct_size == 4112 && buf_size == 65792 && (cipher == 0 || 
+            cipher == 1) && block_size == 16 && key_size == 32 && iv_size == 16 && mode == 0 )
+        {
+            if ( file_ptr == NULL )
+            {
+                CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+            }
+        }
+        /* If the invalid parameters did open the file throw an error */
+        else
+        {
+            if ( file_ptr )
+            {
+                CRYPT_TEST_FAULT("Opened a file with invalid data, should have failed but didn't.\n");
+            }
+        }
+    }
+
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+
+    if ( file_ptr )
+    {
+        if (H5FDclose(file_ptr) < 0) {
+            CRYPT_TEST_FAULT("can't close file\n");
+        }
+    }
+
+
+done:
+    
+    if (ret_value < 0) {
+        H5E_BEGIN_TRY
+        {
+            H5Pclose(fapl_id);
+            H5FDclose(file_ptr);
+        }
+        H5E_END_TRY
+    }
+
+
+    return ret_value;
+
+} /* end crypt_test_invalid_config_helper() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_invalid_addrs_and_buffs
+ *
+ * Purpose:     Tests proper error handling when the addrs and buffers are
+ *              invalid.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Verifies that invalid addrs, sizes, and buffers for reads
+ *              and writes will correctly fail
+ *              
+ *              The tests are as follows for both read and write requests:
+ *              - Read or write buffer pointer is NULL.
+ *              - File pointer is NULL.
+ *              - dxpl_id is an invalid id.
+ *              - When addr + size exceeds the EOA of the file
+ *              - When addr + size exceeds the EOA of the file, by only 
+ *                1 byte.
+ *              - When the addr itself is beyond the EOA of the file.
+ *              - The size of the request is 0.
+ * 
+ *              If parameter cl_config is TRUE, tests using configuration 
+ *              language.
+ *              
+ *-------------------------------------------------------------------------
+ */
+static int 
+crypt_test_invalid_addrs_and_buffs(bool cl_config)
+{
+    char                  filename[1024];
+    hid_t                 fapl_id      = H5I_INVALID_HID;
+    H5FD_t               *file_ptr     = NULL;
+    char                  config_str[] =
         "( encryption_VFD "
         "  ( ( plaintext_page_size  4096 )"
         "    ( ciphertext_page_size 4112 )"
@@ -7124,494 +9048,16 @@ crypt_test_create_and_write_twofish(bool cl_config)
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
     };
-    H5FD_t                * file_ptr           = NULL;
-    unsigned char         * one_page_write_buf = NULL;
-    unsigned char         * one_page_read_buf  = NULL;
-    int                     ret_value    = 0;
+    unsigned char        *setup_buf         = NULL;
+    unsigned char        *valid_buf         = NULL;
+    unsigned char        *zero_buf          = NULL;
+    size_t                size              = vfd_config.plaintext_page_size;
+    herr_t                ret; 
+    int                   ret_value    = 0;
 
     /* setup the target file name, and delete any existing instance */
     h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
     HDremove(filename);
-
-    /* create and initialize FAPL for the encryption VFD */
-    
-    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
-        CRYPT_TEST_FAULT("can't create FAPL ID\n");
-    }
-
-    if ( cl_config ) {
-
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("can't load config string into fapl\n");
-        }
-    } else {
-
-        if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
-        }
-    }
-
-    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
-        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
-    }
-
-    if ( cl_config ) {
-
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-
-    } else {
-
-        if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-    }
-
-    /** 
-     * Opens a file that doesn't exist with the create flag. Should create the
-     * file, open it, and write the first two pages with the config data.
-     */
-    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
-                    fapl_id, HADDR_UNDEF)))
-        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
-
-
-
-    /********** Buffer setup to test write data to the file  **********/
-
-    /* Buffer to hold the data that will be used to test the write function */
-    one_page_write_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == one_page_write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
-
-    /* Fill the buffer with random characters to simulate data */
-    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
-        one_page_write_buf[i] = (unsigned char)rand() % 256;
-
-    /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(1 * vfd_config.plaintext_page_size)) < 0 )
-        CRYPT_TEST_FAULT("couldn't set file eoa\n");
-    
-    /* Write the data to the file */
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, one_page_write_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't write data to file\n");
-
-
-    /* Buffer for the read test to store the page that was just written */
-    one_page_read_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == one_page_read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
-
-    /* Reads the data back that was just written */
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, one_page_read_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't read data from file\n");
-
-    /* Compare the data that was written to the data that was read */
-    if (memcmp(one_page_write_buf, one_page_read_buf, 
-                vfd_config.plaintext_page_size) != 0)
-        CRYPT_TEST_FAULT("data read from file does not match data written\n");
-
-    if (H5Pclose(fapl_id) < 0) {
-        CRYPT_TEST_FAULT("can't close fapl\n");
-    }
-
-    if (H5FDclose(file_ptr) < 0) {
-        CRYPT_TEST_FAULT("can't close file\n");
-    }
-
-done:
-    
-    if (ret_value < 0) {
-        H5E_BEGIN_TRY
-        {
-            H5Pclose(fapl_id);
-            H5FDclose(file_ptr);
-        }
-        H5E_END_TRY
-    }
-
-    if (one_page_write_buf)
-        free(one_page_write_buf);
-
-    if (one_page_read_buf)
-        free(one_page_read_buf);
-
-    return ret_value;
-    
-} /* end crypt_test_create_and_write_twofish() */
-
-
-/*-------------------------------------------------------------------------
- * Function:    crypt_test_verify_create_and_encryption_twofish
- *
- * Purpose:     Tests the encryption VFD creating and opening a file that 
- *              doesn't exist and writing one page to it. Then using POSIX
- *              calls to open the file manually, reads the entire file 
- *              (first two config pages and the third encrypted page) into
- *              a buffer. Another buffer is allocated and three pages are 
- *              manually created and stored in this new buffer. The 
- *              manually created pages are exactly what the pages in the
- *              file should be. These two buffers are then compared to 
- *              ensure the data in the file is correct (first page 
- *              configuration data, second page test encryption phrase, 
- *              third page encrypted data).
- * 
- *              Using the TWOFISH cipher
- *
- * Return:      Success:        0
- *              Failure:        -1
- *
- *-------------------------------------------------------------------------
- */
-static int
-crypt_test_verify_create_and_encryption_twofish(bool cl_config)
-{
-    hid_t                   fapl_id         = H5I_INVALID_HID;
-    char                    filename[1024];
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  1 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
-    {
-        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
-        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 1,  
-        /* cipher_block_size      = */ 16,
-        /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
-        /* iv_size                = */ 16,
-        /* mode                   = */ 0,
-        /* fapl_id                = */ H5P_DEFAULT
-    };
-    H5FD_t                * file_ptr            = NULL;
-    unsigned char         * write_buf           = NULL;
-    unsigned char         * read_buf            = NULL;
-    unsigned char         * compare_buf         = NULL;
-    int                     fd                  = -1;
-    size_t                  size_of_3_page_file;
-    gcry_cipher_hd_t        handle;
-    unsigned char         * iv_second_page      = NULL;
-    unsigned char         * iv_third_page       = NULL;
-    const char            * test_phrase         = "Decryption works";
-    unsigned char         * test_phrase_buf     = NULL;
-    int                     ret_value           = 0;
-
-    /* setup the target file name, and delete any existing instance */
-    h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
-    HDremove(filename);
-
-    /* create and initialize FAPL for the encryption VFD */
-    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
-        CRYPT_TEST_FAULT("can't create FAPL ID\n");
-    }
-
-    if ( cl_config ) {
-
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("can't load config string into fapl\n");
-        }
-    } else {
-
-        if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
-        }
-    }
-
-    if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
-        CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
-    }
-
-    if ( cl_config ) {
-
-        if (compare_crypt_config_str(fapl_id, vfd_cfg_str) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-
-    } else {
-
-        if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
-            CRYPT_TEST_FAULT("information mismatch\n");
-        }
-    }
-
-
-    /** 
-     * Opens a file that doesn't exist with the create flag. Should create the
-     * file, open it, and write the first two pages with config data.
-     */
-    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
-                    fapl_id, HADDR_UNDEF)))
-        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
-
-
-
-    /********** Buffer setup to test writing data to the file  **********/
-
-    /* Buffer to hold the data that will be used to test the write function */
-    write_buf = malloc(vfd_config.plaintext_page_size);
-    if (NULL == write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
-
-    /* Fill the buffer with random characters to simulate data */
-    for (size_t i = 0; i < vfd_config.plaintext_page_size; i++)
-        write_buf[i] = (unsigned char)rand() % 256;
-
-    /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(1 * vfd_config.plaintext_page_size)) < 0 )
-        CRYPT_TEST_FAULT("couldn't set file eoa\n");
-
-    /* Write the data to the file */
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 
-                    vfd_config.plaintext_page_size, write_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't write data to file\n");
-
-    /* Close the file */
-    if (H5FDclose(file_ptr) < 0) {
-        CRYPT_TEST_FAULT("can't close file\n");
-    }
-
-
-    /*************************************************************************
-     * Opens the newly created file using normal POSIX calls to read the first
-     * two configuration pages and the third encrypted page into a buffer to 
-     * compare with manually created pages to ensure the data is correct.
-     *************************************************************************/
-
-    /* The size of all the pages file */
-    size_of_3_page_file = 3 * vfd_config.ciphertext_page_size;
-
-    /* Allocate buffer to read the entire file to */
-    read_buf = malloc(size_of_3_page_file);
-    if (NULL == read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
-
-    /* Allocate buffer to store the IVs for the second and third pages */
-    iv_second_page = malloc(vfd_config.iv_size);
-    if (NULL == iv_second_page)
-        CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
-    
-    iv_third_page = malloc(vfd_config.iv_size);
-    if (NULL == iv_third_page)
-        CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
-    
-
-    /* Open the file using POSIX calls */
-    if ((fd = open(filename, O_RDONLY)) < 0)
-        CRYPT_TEST_FAULT("couldn't open file using POSIX calls\n");
-
-    /* Read the entire file into read_buf */
-    if (pread(fd, read_buf, size_of_3_page_file, 0) != (ssize_t)size_of_3_page_file)
-        CRYPT_TEST_FAULT("couldn't read file using POSIX calls\n");
-
-    /* Copies the IV for the second page to encrypt the manually made second page */
-    if (memcpy(iv_second_page, read_buf + vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't copy second page's IV from read_buf\n");
-
-    /* Copies the IV for the third page to encrypt the manually made third page */
-    if (memcpy(iv_third_page, read_buf + 2 * vfd_config.ciphertext_page_size, vfd_config.iv_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't copy third page's IV from read_buf\n");
-
-    /* Close the file */
-    if (close(fd) < 0)
-        CRYPT_TEST_FAULT("couldn't close file using POSIX calls\n");
-
-
-
-
-    /*************************************************************************
-     * Manually creating the data of the three pages into a buffer to compare
-     * the read_buf with to ensure the data in the file is correct.
-     *************************************************************************/
-
-    /* Allocate buffer to store the data for comparison */
-    compare_buf = malloc(size_of_3_page_file);
-    if (NULL == compare_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
-
-
-    /* Manually create the first page and store it in the compare buf */
-    if (memset((void *)(compare_buf), '\0', vfd_config.ciphertext_page_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
-
-    snprintf((char *)compare_buf, vfd_config.ciphertext_page_size,
-             "plaintext_page_size: %zu\n"
-             "ciphertext_page_size: %zu\n"
-             "encryption_buffer_size: %zu\n"
-             "cipher: %d\n"
-             "cipher_block_size: %zu\n"
-             "key_size: %zu\n"
-             "iv_size: %zu\n"
-             "mode: %d\n",
-             vfd_config.plaintext_page_size,
-             vfd_config.ciphertext_page_size,
-             vfd_config.encryption_buffer_size,
-             vfd_config.cipher,
-             vfd_config.cipher_block_size,
-             vfd_config.key_size,
-             vfd_config.iv_size,
-             vfd_config.mode);
-
-
-
-    /* Manually create the second page and store it in the compare buf*/
-    if (memset((void *)(compare_buf + vfd_config.ciphertext_page_size), '\0', 
-                vfd_config.ciphertext_page_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't memset compare_buf\n");
-
-
-    test_phrase_buf = (unsigned char *)calloc(vfd_config.ciphertext_page_size, 
-                                                sizeof(unsigned char));
-    if ( NULL == test_phrase_buf ) 
-        CRYPT_TEST_FAULT("couldn't allocate memory for test_phrase_buf\n");
-
-    memcpy(test_phrase_buf, test_phrase, strlen(test_phrase) + 1);
-
-
-
-    /* Manually encrypt and write the second page into the compare buf */
-    if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
-                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
-        CRYPT_TEST_FAULT("couldn't open cipher handle\n");
-    
-    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
-        CRYPT_TEST_FAULT("couldn't set key\n");
-
-    /* Stores the second page's IV into the compare buf */
-    if (memcpy((void *)(compare_buf + vfd_config.ciphertext_page_size), 
-                            iv_second_page, vfd_config.iv_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't memcpy second page's IV to compare buf\n");
-
-    if ( gcry_cipher_setiv(handle, iv_second_page, 16) != 0 )
-        CRYPT_TEST_FAULT("couldn't set IV to handle for page 2\n");
-
-    if ( gcry_cipher_encrypt(handle, 
-            compare_buf + vfd_config.ciphertext_page_size + vfd_config.iv_size,
-            vfd_config.plaintext_page_size, 
-            test_phrase_buf, 
-            vfd_config.plaintext_page_size) != 0 )
-        CRYPT_TEST_FAULT("couldn't encrypt second page\n");
-
-    gcry_cipher_close(handle);  
-
-
-
-    /* Manually encrypt and write the created page (write_buf) into the compare buf*/
-    if ( gcry_cipher_open(&handle, GCRY_CIPHER_TWOFISH, 
-                            GCRY_CIPHER_MODE_CBC, 0) != 0 )
-        CRYPT_TEST_FAULT("couldn't open cipher handle for page 3\n");
-
-    if ( gcry_cipher_setkey(handle, vfd_config.key, 32) != 0 )
-        CRYPT_TEST_FAULT("couldn't set key the for page 3\n");
-
-    /* Stores the third page's IV into the compare buf */
-    if (memcpy((void *)(compare_buf + 2 * vfd_config.ciphertext_page_size), 
-                            iv_third_page, vfd_config.iv_size) == NULL)
-        CRYPT_TEST_FAULT("couldn't memcpy third page's IV to compare buf\n");
-
-    if ( gcry_cipher_setiv(handle, iv_third_page, 16) != 0 )
-        CRYPT_TEST_FAULT("couldn't set IV to handle for page 3\n");
-
-    if ( gcry_cipher_encrypt(handle, 
-            compare_buf + 2 * vfd_config.ciphertext_page_size + vfd_config.iv_size,
-            vfd_config.plaintext_page_size, 
-            write_buf, 
-            vfd_config.plaintext_page_size) != 0 )
-        CRYPT_TEST_FAULT("couldn't encrypt third page\n");
-
-    gcry_cipher_close(handle);
-
-
-
-    /**
-     * Compare the read_buf that holds the data read from the file and 
-     * compare_buf which holds the manually created data to ensure the data in
-     * the file matches what it should be.
-     */
-    if (memcmp(read_buf, compare_buf, size_of_3_page_file) != 0) {
-        CRYPT_TEST_FAULT("pages read from file does not match manually made pages\n");
-    }
-
-done:
-    
-    if (ret_value < 0) {
-        H5E_BEGIN_TRY
-        {
-            H5Pclose(fapl_id);
-            H5FDclose(file_ptr);
-            if (fd >= 0)
-                close(fd);
-        }
-        H5E_END_TRY
-    }
-
-    if (write_buf)
-        free(write_buf);
-
-    if (compare_buf)
-        free(compare_buf);
-
-    if (read_buf)
-        free(read_buf);
-    
-    if (test_phrase_buf)
-        free(test_phrase_buf);
-    
-    if (iv_second_page)
-        free(iv_second_page);
-    
-    if (iv_third_page)
-        free(iv_third_page);
-
-    return ret_value;
-    
-} /* end crypt_test_verify_create_and_encryption_twofish() */
-
-
-/*-------------------------------------------------------------------------
- * Function:    crypt_test_write_and_read_twofish
- *
- * Purpose:     Generalized test function for writing 'num_pages' to the 
- *              file. This uses the TWOFISH cipher and tests the write and 
- *              read operations with a variable number of pages.
- * 
- *              Using the TWOFISH cipher
- *
- * Return:      Success:        0
- *              Failure:        -1
- *
- *-------------------------------------------------------------------------
- */
-static int
-crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd_config, 
-                                  char * config_str, bool cl_config)
-{
-    hid_t                   fapl_id         = H5I_INVALID_HID;
-    char                    filename[1024];
-    H5FD_t                * file_ptr        = NULL;
-    unsigned char         * write_buf       = NULL;
-    unsigned char         * read_buf        = NULL;
-    size_t                  size_of_pages;
-    int                     ret_value       = 0;
-
-    /* setup the target file name */
-    h5_fixname(FILENAME[17], vfd_config->fapl_id, filename, 1024);
 
     /* create and initialize FAPL for the encryption VFD */
     
@@ -7626,7 +9072,7 @@ crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd
         }
     } else {
 
-        if (H5Pset_fapl_crypt(fapl_id, vfd_config) < 0) {
+        if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
             CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
         }
     }
@@ -7634,6 +9080,7 @@ crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd
     if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
         CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
     }
+
 
     if ( cl_config ) {
 
@@ -7643,52 +9090,322 @@ crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd
 
     } else {
 
-        if (compare_crypt_config_info(fapl_id, vfd_config) < 0) {
+        if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
             CRYPT_TEST_FAULT("information mismatch\n");
         }
     }
 
-
-    /* Opens an existing file with the read/write flag. */
-    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR, fapl_id, HADDR_UNDEF)))
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT, 
+                    fapl_id, HADDR_UNDEF)))
         CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
 
 
+    /***** Sets up file to be non-empty *****/
 
-    /********** Buffer setup to test write data to the file  **********/
-
-    size_of_pages = num_pages * vfd_config->plaintext_page_size;
-
-    /* Buffer to hold the data that will be used to test the write function */
-    write_buf = malloc(size_of_pages);
-    if (NULL == write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
-
-    /* Fill the buffer with random characters to simulate data */
-    for (size_t i = 0; i < (size_of_pages); i++)
-        write_buf[i] = (unsigned char)rand() % 256;
+    setup_buf = (unsigned char *)malloc(size);
+    if (NULL == setup_buf) 
+        CRYPT_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+    
+    for (size_t i = 0; i < size; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
 
     /* set the eoa so we can write the page of data */
-    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(num_pages * vfd_config->plaintext_page_size)) < 0 )
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(size * 4)) < 0 )
         CRYPT_TEST_FAULT("couldn't set file eoa\n");
-    
-    /* Write the data to the file */
-    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_pages, 
-                    write_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't write data to file\n");
 
-    /* Buffer for the read test to try to store the page that was just written */
-    read_buf = malloc(size_of_pages);
-    if (NULL == read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, setup_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write to file\n");
 
-    /* Reads the data back that was just written */
-    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_pages, 
-                    read_buf) < 0)
-        CRYPT_TEST_FAULT("couldn't read data from file\n");
 
-    if (memcmp(write_buf, read_buf, size_of_pages) != 0)
-        CRYPT_TEST_FAULT("data read from file does not match data written\n");
+    /* Allocate a valid buffer for testing */
+    valid_buf = (unsigned char *)malloc(size);
+    if (NULL == valid_buf) 
+        CRYPT_TEST_FAULT("couldn't allocate memory for buffer (setup_buf)\n");
+
+    /* Allocate a buffer for testing */
+    zero_buf = (unsigned char *)malloc(size);
+    if (NULL == zero_buf) 
+        CRYPT_TEST_FAULT("couldn't allocate memory for buffer (zero_buf)\n");
+
+    /* Fill zero_buf with 0s for easy verification */
+    for (size_t i = 0; i < size; i++)
+        zero_buf[i] = 0;
+
+
+    /*********************************************************/
+    /***** TEST READ WITH BUFFER BEING NULL, SHOULD FAIL *****/
+    /*********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, NULL);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle NULL buffer error correctly\n");
+
+
+    /**********************************************************/
+    /***** TEST WRITE WITH BUFFER BEING NULL, SHOULD FAIL *****/
+    /**********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, NULL);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle NULL buffer error correctly\n");
+
+
+    /***************************************************************/
+    /***** TEST READ WITH FILE POINTER BEING NULL, SHOULD FAIL *****/
+    /***************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(NULL, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle file NULL error correctly\n");
+
+
+    /****************************************************************/
+    /***** TEST WRITE WITH FILE POINTER BEING NULL, SHOULD FAIL *****/
+    /****************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(NULL, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle file NULL error correctly\n");
+
+
+    /******************************************************/
+    /***** TEST READ WITH INVALID H5P ID, SHOULD FAIL *****/
+    /******************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5I_INVALID_HID, 0, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle invalid ID error correctly\n");
+
+
+    /*******************************************************/
+    /***** TEST WRITE WITH INVALID H5P ID, SHOULD FAIL *****/
+    /*******************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5I_INVALID_HID, 0, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle invalid ID error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST READ WHEN ADDR IS NOT ON A PAGE BOUNDARY, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, size - 1, 
+                                                            size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST READ WHEN ADDR IS NOT ON A PAGE BOUNDARY, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, size - 1, 
+                                                            size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /*********************************************************************/
+    /***** TEST READ WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /*********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (size * 3), (2 * size), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST WRITE WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (size * 3), (2 * size), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /*********************************************************************/
+    /***** TEST READ WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /*********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (size * 3), (size + 1), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************************/
+    /***** TEST WRITE WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /**********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, (size * 3), (size + 1), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /**********************************************************/
+    /***** TEST READ WHEN ADDR IS BEYOND EOA, SHOULD FAIL *****/
+    /**********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, size * 5, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /***********************************************************/
+    /***** TEST WRITE WHEN ADDR IS BEYOND EOA, SHOULD FAIL *****/
+    /***********************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, size * 5, size, valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /*********************************************************************/
+    /***** TEST READ WHEN ADDR AND SIZE WILL EXCEED EOA, SHOULD FAIL *****/
+    /*********************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, (size + 1), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /****************************************************************************/
+    /***** TEST WRITE WHEN SIZE IS NOT A MULTIPLE OF PAGE SIZE, SHOULD FAIL *****/
+    /****************************************************************************/
+
+    H5E_BEGIN_TRY
+    {
+        ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, (size + 1), valid_buf);
+    }
+    H5E_END_TRY
+
+    if ( ret >= 0 )
+        CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
+
+
+    /********************************************************************************/
+    /***** TEST READ WHEN SIZE IS 0, SHOULD SUCCEED BUT BUFFER WILL BE EMPTY *****/
+    /********************************************************************************/
+
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized read failed\n");
+    }
+
+    /* Ensure no data was read into zero_buf */
+    if (memcmp(setup_buf, zero_buf, size) != 0) 
+    {
+        for ( size_t i = 0; i < size; i++ )
+        {
+            if ( zero_buf[i] != 0 )
+            {
+                CRYPT_TEST_FAULT("zero_buf modified during zero-size read\n");
+            }
+        }
+    }
+    else
+    {
+        CRYPT_TEST_FAULT("Data read when size of read is 0\n");
+    }
+
+
+    /***********************************************************************************/
+    /***** TEST WRITE WHEN SIZE IS 0, SHOULD SUCCEED BUT NOTHING WILL BE WRITTEN *****/
+    /***********************************************************************************/
+
+    if (( ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized write failed\n");
+    }
+
+    /* Verify the zero sized write didn't actually write any data */
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, valid_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized read failed\n");
+    }
+    else
+    {
+        if (memcmp(setup_buf, valid_buf, size) != 0) 
+        {
+            CRYPT_TEST_FAULT("Data was written when size of write was 0\n");
+        }
+    }
+
 
     if (H5Pclose(fapl_id) < 0) {
         CRYPT_TEST_FAULT("can't close fapl\n");
@@ -7699,7 +9416,7 @@ crypt_test_write_and_read_twofish(size_t num_pages, H5FD_crypt_vfd_config_t *vfd
     }
 
 done:
-    
+
     if (ret_value < 0) {
         H5E_BEGIN_TRY
         {
@@ -7709,15 +9426,22 @@ done:
         H5E_END_TRY
     }
 
-    if (write_buf)
-        free(write_buf);
-
-    if (read_buf)
-        free(read_buf);
+    if ( setup_buf )
+    {
+        free(setup_buf);
+    }
+    if ( valid_buf )
+    {
+        free(valid_buf);
+    }
+    if ( zero_buf )
+    {
+        free(zero_buf);
+    }
 
     return ret_value;
-    
-} /* end crypt_test_write_and_read_twofish() */
+
+} /* end crypt_test_invalid_addrs_and_buffs() */
 
 
 /*-------------------------------------------------------------------------
@@ -7765,7 +9489,7 @@ run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id, 
         "          ( cipher  0 )"
         "          ( cipher_block_size 16 )"
         "          ( key_size  32 )"
-        "          ( key --0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF )"
+        "          ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
         "          ( iv_size 16 )"
         "          ( mode 0 )"
         "          ( underlying_VFD ( sec2 () ) )"
@@ -7787,7 +9511,7 @@ run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id, 
         "          ( cipher  0 )"
         "          ( cipher_block_size 16 )"
         "          ( key_size  32 )"
-        "          ( key --0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF )"
+        "          ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
         "          ( iv_size 16 )"
         "          ( mode 0 )"
         "        )"
@@ -8110,7 +9834,7 @@ done:
 static int
 crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl_config)
 {
-    char                     filename[1024];
+    char                  filename[1024];
     char                  config_str_sub_sec2[] =
         "( page_buffer "
         "  ( ( page_size 4096 )"
@@ -8124,7 +9848,7 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl
         "          ( cipher  0 )"
         "          ( cipher_block_size 16 )"
         "          ( key_size  32 )"
-        "          ( key --0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF )"
+        "          ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
         "          ( iv_size 16 )"
         "          ( mode 0 )"
         "          ( underlying_VFD ( sec2 () ) )"
@@ -8146,7 +9870,7 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl
         "          ( cipher  0 )"
         "          ( cipher_block_size 16 )"
         "          ( key_size  32 )"
-        "          ( key --0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF )"
+        "          ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
         "          ( iv_size 16 )"
         "          ( mode 0 )"
         "        )"
@@ -8277,7 +10001,6 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl
         CRYPT_TEST_FAULT("can't create file\n");
     }
 
-    // file_id = H5Fopen(filename, H5F_ACC_RDWR, pb_fapl_id);
     file_id = H5Fopen(filename, H5F_ACC_RDONLY, pb_fapl_id);
 
     if (file_id < 0) {
@@ -8422,7 +10145,6 @@ done:
     if (ret_value < 0) {
         H5E_BEGIN_TRY
         {
-            // H5Pclose(dcpl_id);
             H5Dclose(dset_id);
             H5Sclose(space_id);
             H5Fclose(file_id);
@@ -8517,12 +10239,89 @@ done:
 static herr_t
 test_crypt(bool cl_config)
 {
-    int                         buf[PB_DS_SIZE][PB_DS_SIZE];
-    hsize_t                     dims[2]       = {CRYPT_DS_SIZE, CRYPT_DS_SIZE};
-    hid_t                       child_fapl_id = H5I_INVALID_HID;
-    int                         i             = 0;
-    int                         j             = 0;
-    struct crypt_dataset_def    data;
+    int                      buf[PB_DS_SIZE][PB_DS_SIZE];
+    hsize_t                  dims[2]          = {CRYPT_DS_SIZE, CRYPT_DS_SIZE};
+    hid_t                    child_fapl_id    = H5I_INVALID_HID;
+    int                      i                = 0;
+    int                      j                = 0;
+    int                      testExpress;
+    struct crypt_dataset_def data;
+    char                    *config_str_ptr   = NULL;
+    char                     config_str[512];
+    size_t                  *plaintext_sizes  = NULL;
+    size_t                  *crypt_buf_sizes  = NULL;
+    size_t                  *num_pages_tested = NULL;
+    int32_t                  cipher_array[]   = {0, 1};
+    size_t                   num_page_sizes;
+    size_t                   num_buf_sizes;
+    int32_t                  num_ciphers;
+    size_t                   num_pages;         
+
+   
+
+    testExpress = GetTestExpress();
+
+    /* testExpress = 0*/
+                               /* 1/2 KB 4 KB  128 KB   1 MB     4 MB     16 MB */
+    static size_t  pt_array_0[]  = {512, 4096, 131072, 1048576, 4194304, 16777216};
+    static size_t  buf_array_0[] = {1, 16, 32, 64};
+    static size_t  n_pages_0[]   = {2, 15, 16, 17, 32, 33, 64, 65};
+    
+    /* testExpress == 1 or 2 */
+                               /* 1/2 KB 4 KB   1 MB     4 MB */
+    static size_t  pt_array_1[]  = {512, 4096, 1048576, 4194304};
+    static size_t  buf_array_1[] = {1, 16, 32};
+    static size_t  n_pages_1[]   = {2, 15, 16, 17, 32, 33};
+    
+    /* testExpress == 3 */
+    static size_t  pt_array_3[]  = {512, 4096, 1048576};
+    static size_t  buf_array_3[] = {1, 16};
+    static size_t  n_pages_3[]   = {2, 15, 16, 17, 32, 33};
+
+    
+    if ( testExpress == 0 )
+    {
+        plaintext_sizes  = pt_array_0;
+        crypt_buf_sizes  = buf_array_0;
+        num_pages_tested = n_pages_0;
+
+        num_page_sizes = sizeof(pt_array_0) / sizeof(&pt_array_0[0]);
+        num_buf_sizes  = sizeof(buf_array_0) / sizeof(&buf_array_0[0]);
+        num_pages      = sizeof(n_pages_0) / sizeof(&n_pages_0[0]);
+    }
+    else if ( testExpress <= 2 )
+    {
+        plaintext_sizes  = pt_array_1;
+        crypt_buf_sizes  = buf_array_1;
+        num_pages_tested = n_pages_1;
+
+        num_page_sizes = sizeof(pt_array_1) / sizeof(&pt_array_1[0]);
+        num_buf_sizes  = sizeof(buf_array_1) / sizeof(&buf_array_1[0]);
+        num_pages      = sizeof(n_pages_1) / sizeof(&n_pages_1[0]);
+    }
+    else
+    {
+        plaintext_sizes  = pt_array_3;
+        crypt_buf_sizes  = buf_array_3;
+        num_pages_tested = n_pages_3;
+
+        num_page_sizes = sizeof(pt_array_3) / sizeof(&pt_array_3[0]);
+        num_buf_sizes  = sizeof(buf_array_3) / sizeof(&buf_array_3[0]);
+        num_pages      = sizeof(n_pages_3) / sizeof(&n_pages_3[0]);
+    }
+
+    num_ciphers    = sizeof(cipher_array) / sizeof(cipher_array[0]);
+
+
+    if ( cl_config ) {
+
+        TESTING("Encrypting VFD with text based config -- Stand Alone");
+
+    } else {
+
+        TESTING("Encrypting VFD -- Stand Alone");
+
+    }
 
     /* pre-fill data buffer to write */
     for (i = 0; i < CRYPT_DS_SIZE; i++) {
@@ -8537,106 +10336,6 @@ test_crypt(bool cl_config)
     data.dims        = dims;
     data.n_dims      = 2;
     data.dset_name   = CRYPT_DATASET_NAME;
-
-    if ( cl_config ) {
-
-        TESTING("Encrypting VFD with text based config -- Stand Alone");
-
-    } else {
-
-        TESTING("Encrypting VFD -- Stand Alone");
-
-    }
-
-    if ( test_crypt_fapl(cl_config) != 0 )
-        TEST_ERROR;
-
-    /* AES256 */
-
-    if ( crypt_test_create(cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_create_and_write(cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_verify_create_and_encryption(cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_write_and_read_aes256(2, cl_config) != 0 )
-        TEST_ERROR;
-    
-    if ( crypt_test_write_and_read_aes256(15, cl_config) != 0 )
-        TEST_ERROR;
-    
-    if ( crypt_test_write_and_read_aes256(16, cl_config) != 0 )
-        TEST_ERROR;
-    
-    if ( crypt_test_write_and_read_aes256(17, cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_write_and_read_aes256(18, cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_write_and_read_aes256(32, cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_write_and_read_aes256(33, cl_config) != 0 )
-        TEST_ERROR;
-
-    /* TWOFISH */
-
-    if ( crypt_test_create_and_write_twofish(cl_config) != 0 )
-        TEST_ERROR;
-
-    if ( crypt_test_verify_create_and_encryption_twofish(cl_config) != 0 )
-        TEST_ERROR;
-
-    char vfd_cfg_str[] =
-        "( encryption_VFD "
-        "  ( ( plaintext_page_size  4096 )"
-        "    ( ciphertext_page_size 4112 )"
-        "    ( encryption_buffer_size 65792 )"
-        "    ( cipher  1 )"
-        "    ( cipher_block_size 16 )"
-        "    ( key_size  32 )"
-        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
-        "    ( iv_size 16 )"
-        "    ( mode 0 )"
-        "    ( underlying_VFD ( sec2 () ) )"
-        "  )"
-        ")";
-    H5FD_crypt_vfd_config_t vfd_config = 
-    {
-        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
-        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
-        /* plaintext_page_size    = */ 4096,
-        /* ciphertext_page_size   = */ 4112,
-        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
-        /* cipher                 = */ 1,  
-        /* cipher_block_size      = */ 16,
-        /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
-        /* iv_size                = */ 16,
-        /* mode                   = */ 0,
-        /* fapl_id                = */ H5P_DEFAULT
-    };
-
-    if ( crypt_test_write_and_read_twofish(17, &vfd_config, vfd_cfg_str, cl_config) != 0 )
-        TEST_ERROR;
-
-
-    PASSED();
-
-
-    if ( cl_config ) {
-
-        TESTING("Encrypting VFD with text based config -- with Page Buffer VFD");
-
-    } else {
-
-        TESTING("Encrypting VFD -- with Page Buffer VFD");
-
-    }
 
     /* Stand-in for manual FAPL creation
      * Enables verification with arbitrary VFDs via `make check-vfd`
@@ -8678,7 +10377,95 @@ test_crypt(bool cl_config)
     } /* end for child fapl definition */
 
 
+
+    if ( test_crypt_fapl(cl_config) != 0 )
+        TEST_ERROR;
+
+    /* Run tests iterating through page sizes */
+    for ( size_t p = 0; p < num_page_sizes; p++ )
+    {
+        /* Run tests iterating through encryption buffer sizes */
+        for ( size_t b = 0; b < num_buf_sizes; b++ )
+        {
+            /* Runs tests iterating through valid ciphers */
+            for ( int32_t c = 0; c < num_ciphers; c++ )
+            {
+                if ( cl_config )
+                {
+                    snprintf(config_str, sizeof(config_str),
+                        "( encryption_VFD "
+                        "  ( ( plaintext_page_size  %zu )"
+                        "    ( ciphertext_page_size %zu )"
+                        "    ( encryption_buffer_size %zu )"
+                        "    ( cipher %d )"
+                        "    ( cipher_block_size 16 )"
+                        "    ( key_size  32 )"
+                        "    ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )"
+                        "    ( iv_size 16 )"
+                        "    ( mode 0 )"
+                        "    ( underlying_VFD ( sec2 () ) )"
+                        "  )"
+                        ")",
+                        plaintext_sizes[p],
+                        16 + plaintext_sizes[p],
+                        crypt_buf_sizes[b] * (16 + plaintext_sizes[p]),
+                        cipher_array[c]
+                    );
+
+                    config_str_ptr = config_str;
+                }
+
+                H5FD_crypt_vfd_config_t vfd_config = 
+                {
+                    /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
+                    /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+                    /* plaintext_page_size    = */ plaintext_sizes[p],
+                    /* ciphertext_page_size   = */ 16 + plaintext_sizes[p],
+                    /* encryption_buffer_size = */ crypt_buf_sizes[b] * (16 + plaintext_sizes[p]),
+                    /* cipher                 = */ cipher_array[c],  
+                    /* cipher_block_size      = */ 16,
+                    /* key_size               = */ 32,
+                    /* key                    = */ H5FD_CRYPT_TEST_KEY,
+                    /* iv_size                = */ 16,
+                    /* mode                   = */ 0,
+                    /* fapl_id                = */ H5P_DEFAULT
+                };
+
+                /* Tests creating a file with the encryption VFD */
+                if ( crypt_test_create(config_str_ptr, vfd_config) != 0 )
+                    TEST_ERROR;
+
+                /* Tests writing to a file correctly encrypts the data */
+                if ( crypt_test_verify_create_and_encryption(config_str_ptr, vfd_config) != 0 )
+                    TEST_ERROR;
+
+                /**
+                 * Tests reading from a file and correctly decrypts the data, 
+                 * and tests writing and reading multiple pages.
+                 */
+                for ( size_t n = 0; n < num_pages; n++ )
+                {
+                    if ( crypt_test_write_and_read(num_pages_tested[n], config_str_ptr, vfd_config) != 0 )
+                        TEST_ERROR;
+                }
+            
+            } /* end for ( size_t c = 0; c < num_ciphers; c++ ) */
+        
+        } /* end for ( size_t b = 0; b < num_buf_sizes; b++ ) */
+    
+    } /* end for ( size_t p = 0; p < num_page_sizes; p++ ) */
+
+    /* Tests proper error handling if the encryption configuration data is not valid */
+    if ( crypt_test_invalid_config(cl_config) < 0 )
+        TEST_ERROR;
+
+    /* Tests proper error handling for invalid addrs and buffers */
+    if ( crypt_test_invalid_addrs_and_buffs(cl_config) < 0 ) 
+        TEST_ERROR;
+
+
     PASSED();
+
 
     return 0;
 
@@ -8690,7 +10477,7 @@ error:
 
 #undef CRYPT_TEST_FAULT
 
-#endif /* encrypting VFD test code */
+#endif /* encryption VFD test code */
 
 
 /*****************************************************************************
@@ -11135,6 +12922,13 @@ main(void)
 {
     const char *driver_name;
     int         nerrors = 0;
+    const char    *returned_env_var = NULL;
+
+    returned_env_var = getenv(HDF5_DRIVER);
+    fprintf(stderr, returned_env_var);
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+    fprintf(stderr, returned_env_var);
 
     /* Don't run VFD tests when HDF5_DRIVER or HDF5_TEST_DRIVER is set. These
      * tests expect a specific VFD to be set and HDF5_DRIVER/HDF5_TEST_DRIVER
@@ -11142,6 +12936,12 @@ main(void)
      */
     driver_name = h5_get_test_driver_name();
     fprintf(stderr, "\ndriver_name = \"%s\"\n", driver_name);
+
+    returned_env_var = getenv(HDF5_DRIVER);
+    fprintf(stderr, returned_env_var);
+
+    returned_env_var = getenv(HDF5_DRIVER_CONFIG);
+    fprintf(stderr, returned_env_var);
 #if 0 
     if (driver_name) {
         printf(" -- SKIPPED VFD tests because driver environment variable is set -- \n");
