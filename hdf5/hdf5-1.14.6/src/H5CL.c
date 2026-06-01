@@ -715,7 +715,7 @@ done:
  * Function:    H5CL__take_down_lex_vars()
  *
  * Purpose:     Discard all dynamically allocated memory associates with the 
- *              supplied instance of struct_H5CL_lex_vars_t and set its 
+ *              supplied instance of struct H5CL_lex_vars_t and set its 
  *              struct tag to an invalid value.
  * 
  *                                              JRM -- 12/5/25
@@ -999,17 +999,17 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t * lex_vars_ptr)
 
                     HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
                                 "Illegal char \'%c\' in input string.  Error constructing context.",
-                                next_char);
+                             next_char);
                 } else if ( '%' == next_char ) {
 
                     HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
-                                "Percent sign in input string.  Context: %s",
-                                lex_vars_ptr->err_ctx);
+                             "Percent sign in input string.  Context: %s",
+                             lex_vars_ptr->err_ctx);
                 } else {
 
                     HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
                                 "Illegal char \'%c\' in input string.  Context: %s",
-                                next_char, lex_vars_ptr->err_ctx);
+                             next_char, lex_vars_ptr->err_ctx);
                 }
 
             }
@@ -1431,16 +1431,16 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected,
                          "Ill-formed numerical constant.  Error constructing context.");
 
             } else {
-                /* while it isn't necessary functionally, increment lex_vars_ptr->next_char_ptr
-                * past the ill formed numerical constant.  Do this to facilitate testing.
-                */
-                lex_vars_ptr->next_char_ptr += chars_to_skip;
+            /* while it isn't necessary functionally, increment lex_vars_ptr->next_char_ptr
+             * past the ill formed numerical constant.  Do this to facilitate testing.
+             */
+            lex_vars_ptr->next_char_ptr += chars_to_skip;
 
                 HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,  
                          "Ill-formed numerical constant.  Context: %s",
                          lex_vars_ptr->err_ctx);
             }
-            
+
         } /* ill_formed */
 
         /* read integer or float token */

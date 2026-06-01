@@ -232,6 +232,7 @@ static herr_t  H5FD__crypt_fapl_free(void *_fapl);
 static H5FD_t *H5FD__crypt_open(const char *name, unsigned flags, hid_t fapl_id, haddr_t maxaddr);
 static herr_t  H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id);
 static herr_t  H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * config_ptr);
+static herr_t  H5FD__crypt_verify_config(const H5FD_crypt_vfd_config_t * config_ptr);
 static herr_t  H5FD__crypt_close(H5FD_t *_file);
 static int     H5FD__crypt_cmp(const H5FD_t *_f1, const H5FD_t *_f2);
 static herr_t  H5FD__crypt_query(const H5FD_t *_file, unsigned long *flags /* out */);
@@ -662,23 +663,9 @@ H5FD__crypt_populate_config(H5FD_crypt_vfd_config_t *vfd_config,
     if ( ( vfd_config ) && ( H5FD_CRYPT_MAX_KEY_SIZE < vfd_config->key_size ) )
         HGOTO_ERROR(H5E_ARGS, H5E_BADRANGE, FAIL, "key_size too big");
 
-    /** 
-     * Checks the ciphertext page size is at least the size of plaintext page
-     * size + IV size to store both the ciphertext and the IV.
-     */
-    if ( ( vfd_config ) && ( vfd_config->iv_size > 0 ) )
-        if ( ( vfd_config->ciphertext_page_size < 
-                    vfd_config->plaintext_page_size + vfd_config->iv_size))
-            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
-                            "ciphertext_page_size too small");
-
-    /* Checks encryption buffer size is a multiple of ciphertext page size */
-    if ( ( vfd_config ) && ( vfd_config->encryption_buffer_size % 
-                                vfd_config->ciphertext_page_size != 0 ) )
-        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
-            "encryption_buffer_size not a multiple of ciphertext_page_size");
-    
-    /* add more checks as needed */
+    /* Verifies valid config data */
+    if ( H5FD__crypt_verify_config(vfd_config) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
 
     memset(fapl_out, 0, sizeof(H5FD_crypt_vfd_config_t));
 
@@ -1416,6 +1403,10 @@ H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id)
         if ( H5FD_CRYPT_CONFIG_MAGIC != config_ptr->magic )
             HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid configuration (magic number mismatch)");
 
+        /* Verify the encryption configuration data */
+        if ( H5FD__crypt_verify_config(config_ptr) < 0 )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
+
         /* Copy *fapl_ptr into file_ptr->fa.  Start with a memcpy() */
         H5MM_memcpy(&(file_ptr->fa), config_ptr, sizeof(H5FD_crypt_vfd_config_t));
 
@@ -1450,6 +1441,10 @@ H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id)
          */
         if ( H5FD__crypt_parse_config(config_str, &(file_ptr->fa)) < 0 )
             HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "can't parse configuration string");
+
+        /* Verify the encryption configuration data */
+        if ( H5FD__crypt_verify_config(&(file_ptr->fa)) < 0 )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
 
         /* save a copy of the configuration string */
         file_ptr->config_str = H5MM_strdup(config_str);
@@ -1754,6 +1749,118 @@ done:
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* H5FD__crypt_parse_config() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    H5FD__crypt_verify_config
+ *
+ * Purpose:     Verifies the encryption configuration data is valid.
+ *
+ * Return:      Success:    SUCCEED
+ *              Failure:    FAIL
+ *
+ *-------------------------------------------------------------------------
+ */
+herr_t   
+H5FD__crypt_verify_config(const H5FD_crypt_vfd_config_t *config_ptr)
+{
+    size_t plaintext_size;
+    size_t ciphertext_size;
+    size_t crypt_buf_size;
+    size_t iv_size;
+    size_t block_size;
+    size_t key_size;
+    int    cipher;
+    int    mode;
+    bool   uses_iv = FALSE;
+
+    herr_t ret_value = SUCCEED;
+
+    FUNC_ENTER_PACKAGE
+
+    assert(config_ptr);
+    assert(H5FD_CRYPT_CONFIG_MAGIC == config_ptr->magic);
+
+    plaintext_size  = config_ptr->plaintext_page_size;
+    ciphertext_size = config_ptr->ciphertext_page_size;
+    crypt_buf_size  = config_ptr->encryption_buffer_size;
+    cipher          = config_ptr->cipher;
+    block_size      = config_ptr->cipher_block_size;
+    key_size        = config_ptr->key_size;
+    iv_size         = config_ptr->iv_size;
+    mode            = config_ptr->mode;
+
+    /* Verify valid cipher and block size */
+    if ( cipher == 0 || cipher == 1 )
+    {
+        if ( block_size == 16 )
+        {
+            if ( key_size != 32 )
+            {
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid key size for cipher");
+            }
+        }
+        else
+        {
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid block size for cipher");
+        }
+    }
+    else
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid cipher");
+    }
+
+    /* Verify valid mode and iv_size */
+    if ( mode == 0 )
+    {
+        if ( iv_size != 16 )
+        {
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid iv size for mode");
+        }
+        else
+        {
+            uses_iv = TRUE;
+        }
+    }
+    else
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid mode");
+    }
+
+    /* Verify plaintext page size */
+    if ( plaintext_size >= 512 && plaintext_size <= 33554432 )
+    {
+        if ( plaintext_size & (plaintext_size - 1) )
+        {
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "plaintext page size is not a power of 2");
+        }
+    }
+    else
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
+                                        "plaintext page size is not within valid parameters");
+    }
+
+    /* Verify ciphertext page size */
+    if ( uses_iv )
+    {
+        if ( ciphertext_size != plaintext_size + iv_size )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
+                                        "ciphertext page size is not within valid parameters");
+    }
+
+    /* Verify encryption buffer size */
+    if ( crypt_buf_size == 0 || (crypt_buf_size % ciphertext_size) != 0 )
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
+                        "encryption buffer size is not a multiple of ciphertext page size");
+    }
+
+done:
+
+    FUNC_LEAVE_NOAPI(ret_value);
+
+} /* H5FD__crypt_verify_config() */
 
 
 /*-----------------------------------------------------------------------------
@@ -2943,7 +3050,7 @@ H5FD__crypt_decrypt_page(H5FD_crypt_t *file_ptr, unsigned char *ciphertext_buf,
     }
 
     /* Sets the key to the handle for the decryption */
-    if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) )
+    if ( 0 != (err = gcry_cipher_setkey(handle, file_ptr->fa.key, file_ptr->fa.key_size)) )
     {
         snprintf(error_string, (size_t)256, "gcrypt error: %s", 
                             gcry_strerror(err));
@@ -2984,13 +3091,13 @@ done:
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__crypt_encrypt_page
  *
- * Purpose:     Encrypts a page of data using the cipher configurationdetails 
+ * Purpose:     Encrypts a page of data using the cipher configuration details 
  *              read from the first page of the file. The function initializes 
  *              a handle variable of type gcry_cipher_hd_t which is used to 
  *              store the context for the cryptographic operations.
  *
- *              The key is loaded from the fapl (test_vfd_config struct) and is
- *              set to the handle for encryption.
+ *              The key is loaded from the fapl and is set to the handle for 
+ *              encryption.
  *
  *              If used an Initialization Vector (IV) is generated and stored 
  *              in the first block of the ciphertext buffer, then set to the 
@@ -3056,7 +3163,7 @@ H5FD__crypt_encrypt_page(H5FD_crypt_t *file_ptr, unsigned char *ciphertext_buf,
     }
 
     /* Sets the key to the handle for the encryption */
-    if ( 0 != (err = gcry_cipher_setkey(handle, test_vfd_config.key, 32)) ) 
+    if ( 0 != (err = gcry_cipher_setkey(handle, file_ptr->fa.key, file_ptr->fa.key_size)) ) 
     {
         snprintf(error_string, (size_t)256, "gcrypt error: %s", 
                     gcry_strerror(err));
@@ -3134,7 +3241,7 @@ H5FD__crypt_write_first_page(H5FD_crypt_t *file_ptr)
      * exists and we know it is big enough, so why not. 
      */
     snprintf((char *)file_ptr->ciphertext_buf, 
-                    test_vfd_config.ciphertext_page_size,
+                    file_ptr->fa.ciphertext_page_size,
              "plaintext_page_size: %zu\n"
              "ciphertext_page_size: %zu\n"
              "encryption_buffer_size: %zu\n"

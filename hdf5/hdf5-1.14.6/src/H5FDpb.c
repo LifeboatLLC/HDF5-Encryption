@@ -86,11 +86,11 @@
  *      evicted.
  ******************************************************************************
  */
-#define H5FD_PB_DIRTY_FLAG      0X0001    /* 0b00000001 */
-#define H5FD_PB_BUSY_FLAG       0x0002    /* 0b00000010 */
-#define H5FD_PB_READ_FLAG       0x0004    /* 0b00000100 */
-#define H5FD_PB_WRITE_FLAG      0x0008    /* 0b00001000 */
-#define H5FD_PB_INVALID_FLAG    0x0010    /* 0b00010000 */
+#define H5FD_PB_DIRTY_FLAG      0X0001    /* 0b00000001  1  */
+#define H5FD_PB_BUSY_FLAG       0x0002    /* 0b00000010  2  */
+#define H5FD_PB_READ_FLAG       0x0004    /* 0b00000100  4  */
+#define H5FD_PB_WRITE_FLAG      0x0008    /* 0b00001000  8  */
+#define H5FD_PB_INVALID_FLAG    0x0010    /* 0b00010000  16 */
 
 
 /* The driver identification number, initialized at runtime */
@@ -376,26 +376,26 @@ typedef struct H5FD_pb_t {
 
 
     /* eoa management fields */
-    haddr_t                  eoa_up;
-    haddr_t                  eoa_down;
+    haddr_t                   eoa_up;
+    haddr_t                   eoa_down;
 
     /* page buffer statistics fields */
     /* Side comments are where these get updated */
-    size_t                    num_pages;            /* get_pageheader */
-    size_t                    num_heads;            /* ht_insert_pageheader */
-    size_t                    num_tails;            /* ht_insert_pageheader */
+    size_t                    num_pages;             /* get_pageheader */
+    size_t                    num_heads;             /* ht_insert_pageheader */
+    size_t                    num_tails;             /* ht_insert_pageheader */
     size_t                    largest_num_in_bucket; /* ht_insert_pageheader */
-    size_t                    num_hits;             /* ht_search_pageheader */
-    size_t                    num_misses;           /* ht_search_pageheader */
-    size_t                    total_middle_reads;   /* pb_read_pageheader */
-    size_t                    total_middle_writes;  /* pb_write_pageheader */
-    size_t                    max_search_depth;     /* ht_search_pageheader */
-    size_t                    total_success_depth;  /* ht_search_pageheader */
-    size_t                    total_fail_depth;     /* ht_search_pageheader */
-    size_t                    total_evictions;      /* rp_evict_pageheader */
-    size_t                    total_dirty;          /* pb_write */
-    size_t                    total_invalidated;    /* pb_invalidate_pageheader */
-    size_t                    total_flushed;        /* rp_evict_pageheader */
+    size_t                    num_hits;              /* ht_search_pageheader */
+    size_t                    num_misses;            /* ht_search_pageheader */
+    size_t                    total_middle_reads;    /* pb_read_pageheader */
+    size_t                    total_middle_writes;   /* pb_write_pageheader */
+    size_t                    max_search_depth;      /* ht_search_pageheader */
+    size_t                    total_success_depth;   /* ht_search_pageheader */
+    size_t                    total_fail_depth;      /* ht_search_pageheader */
+    size_t                    total_evictions;       /* rp_evict_pageheader */
+    size_t                    total_dirty;           /* pb_write */
+    size_t                    total_invalidated;     /* pb_invalidate_pageheader */
+    size_t                    total_flushed;         /* rp_evict_pageheader */
 
 } H5FD_pb_t;
 
@@ -541,6 +541,7 @@ static const H5FD_class_t H5FD_pb_g = {
 
 herr_t   H5FD__pb_load_config(H5FD_pb_t * file_ptr, hid_t pb_fapl_id);
 herr_t   H5FD__pb_parse_config(const char * config_str, H5FD_pb_vfd_config_t * config_ptr);
+herr_t   H5FD__pb_verify_config(H5FD_pb_vfd_config_t * config_ptr);
 herr_t   H5FD__pb_flush_page(H5FD_pb_t * file_ptr, hid_t dxpl_id, H5FD_pb_pageheader_t *pageheader);
 herr_t   H5FD__pb_invalidate_pageheader(H5FD_pb_t *file_ptr, H5FD_pb_pageheader_t *pageheader);
 H5FD_pb_pageheader_t * H5FD__pb_alloc_and_init_pageheader(H5FD_pb_t * file_ptr, haddr_t addr, 
@@ -564,6 +565,7 @@ H5FD_pb_pageheader_t *H5FD__pb_rp_evict_pageheader(H5FD_pb_t *file_ptr, haddr_t 
 
 /* Testing Functions */
 haddr_t  *H5FD__pb_rp_eviction_check(H5FD_t *_file, haddr_t *current_rp_addrs);
+haddr_t  *H5FD__pb_rp_invalid_check(H5FD_t *_file, haddr_t invalid_page_addr);
 
 
 /* Declare a free list to manage the H5FD_pb_t struct */
@@ -829,6 +831,13 @@ H5FD__pb_populate_config(H5FD_pb_vfd_config_t *vfd_config, H5FD_pb_vfd_config_t 
 
         free_config = true;
     }
+#if 0
+    else
+    {
+        if ( H5FD__pb_verify_config(vfd_config) < 0 )
+            HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "page buffer configuration data is not valid");
+    }
+#endif
 
     fapl_out->magic         = vfd_config->magic;
     fapl_out->version       = vfd_config->version;
@@ -905,8 +914,8 @@ H5FD__pb_flush(H5FD_t *_file, hid_t H5_ATTR_UNUSED dxpl_id, bool closing)
 
         /* if the page is valid and dirty, flush it */
         if ( ( 0 == (pageheader->flags & H5FD_PB_INVALID_FLAG) ) &&
-             ( pageheader->flags & H5FD_PB_DIRTY_FLAG ) ) {
-
+             ( pageheader->flags & H5FD_PB_DIRTY_FLAG ) ) 
+        {
             if ( H5FD__pb_flush_page(file_ptr, dxpl_id, pageheader) )
                 HGOTO_ERROR(H5E_VFL, H5E_CANTFLUSH, FAIL, "unable to flush page");
         } 
@@ -1910,7 +1919,7 @@ done:
  *
  * Purpose:     Given the file pointer and the fapl ID, populate 
  *              file_ptr->fa from the fapl file driver property.  Note 
- *              that this property may contain pabe buffer configuration 
+ *              that this property may contain page buffer configuration 
  *              data in string format, binary format, or it may be 
  *              omitted entirely.  In this later case, load file_ptr-fa 
  *              with the default configuration.
@@ -1920,7 +1929,6 @@ done:
  *
  *-------------------------------------------------------------------------
  */
-
 herr_t
 H5FD__pb_load_config(H5FD_pb_t * file_ptr, hid_t pb_fapl_id)
 {
@@ -1962,6 +1970,10 @@ H5FD__pb_load_config(H5FD_pb_t * file_ptr, hid_t pb_fapl_id)
         file_ptr->fa.max_num_pages = config_ptr->max_num_pages;
         file_ptr->fa.rp            = config_ptr->rp;
 
+        /* Verify the configuration data is valid */
+        if ( H5FD__pb_verify_config(&(file_ptr->fa)) < 0 )
+            HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "page buffer configuration data is not valid");
+
         /* copy the FAPL for the underlying VFD */
         if ( H5FD__copy_plist( config_ptr->fapl_id, &(file_ptr->fa.fapl_id)) < 0 )
             HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "can't copy underlying FAPL");
@@ -1986,6 +1998,10 @@ H5FD__pb_load_config(H5FD_pb_t * file_ptr, hid_t pb_fapl_id)
 
         /* save a copy of the configuration string */
         file_ptr->config_str = H5MM_strdup(config_str);
+
+        /* Verify the configuration data is valid */
+        if ( H5FD__pb_verify_config(&(file_ptr->fa)) < 0 )
+            HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "page buffer configuration data is not valid");
 
     } else { /* just load the default configuration */
 
@@ -2014,7 +2030,6 @@ done:
  *
  *-------------------------------------------------------------------------
  */
-
 herr_t
 H5FD__pb_parse_config(const char * config_str, H5FD_pb_vfd_config_t * config_ptr)
 {
@@ -2182,6 +2197,85 @@ done:
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* H5FD__pb_parse_config() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    H5FD__pb_verify_config
+ *
+ * Purpose:     Verifies the page buffer configuration data is valid.
+ *
+ * Return:      Success:    SUCCEED
+ *              Failure:    FAIL
+ *
+ *-------------------------------------------------------------------------
+ */
+herr_t
+H5FD__pb_verify_config(H5FD_pb_vfd_config_t * config_ptr)
+{
+    size_t  page_size;
+    size_t  max_num_pages;
+    int32_t rp;
+    
+    herr_t ret_value = SUCCEED;
+
+    FUNC_ENTER_PACKAGE
+
+    assert(config_ptr);
+    assert(H5FD_PB_CONFIG_MAGIC == config_ptr->magic);
+    assert(H5FD_CURR_PB_VFD_CONFIG_VERSION == config_ptr->version);
+
+    page_size = config_ptr->page_size;
+    max_num_pages = config_ptr->max_num_pages;
+    rp = config_ptr->rp;
+
+    /* Verify page buffer page size */
+    if ( page_size >= 512 && page_size <= 33554432 )
+    {
+        /**
+         * TODO: For now keep as is, where the page buffer page size must be a power
+         * of two. In the future will probably modify this so somehow it will check if
+         * working with the encryption vfd and if so it will adjust the page buffer 
+         * page size to be 16 bytes smaller than a power of two, allowing the encryption
+         * page size to be a power of two since the encryption page must be 16 bytes 
+         * larger when using an initialization vector (IV).
+         */
+        /* Verify page_size is a power of 2 */
+        if ( page_size & (page_size - 1) )
+        {
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "page size is not a power of 2");
+        }
+    }
+    else
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "page size is not within valid parameters");
+    }
+
+    /* Verify max number of pages the page buffer can store */
+    if ( max_num_pages >= 8 && max_num_pages <= 2048 )
+    {
+        /* Verify max_num_pages is a power of 2 */
+        if ( max_num_pages & (max_num_pages - 1) )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "max_num_pages is not a power of 2");
+    }
+    else
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "max_num_pages is not within valid parameters");
+    }
+
+    /* Verifies the replacement policy is valid */
+    if ( rp < 0 || rp > 1 )
+    {
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "replacement policy is not valid");
+    }
+
+
+
+done:
+
+    FUNC_LEAVE_NOAPI(ret_value);
+
+
+} /* H5FD__pb_verify_config() */
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__pb_close
@@ -3352,14 +3446,16 @@ H5FD__pb_get_pageheader(H5FD_pb_t *file_ptr, H5FD_mem_t type, hid_t dxpl_id,
 {
     H5FD_pb_pageheader_t *pageheader = NULL;
     H5FD_pb_pageheader_t *ret_value = NULL;
+    size_t                max_num_pages;
 
     FUNC_ENTER_PACKAGE
 
     assert( file_ptr );
     assert( H5FD_PB_MAGIC == file_ptr->magic );
 
+    max_num_pages = file_ptr->fa.max_num_pages;
 
-    if ( file_ptr->rp_pageheader_count < H5FD_PB_DEFAULT_MAX_NUM_PAGES ) {
+    if ( file_ptr->rp_pageheader_count < (int64_t)max_num_pages ) {
 
         if ( NULL == (pageheader = H5FD__pb_alloc_and_init_pageheader( file_ptr, addr, hash_code )) )
             HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate page");
@@ -3914,8 +4010,8 @@ done:
  * Purpose:     When the maximum number of pages (and therefore 
  *              H5FD_pb_pageheader_t structures) has been reached, and a new
  *              page must be added to the page buffer, the replacement policy
- *              selects an eviction candidate, if dirty flushes the associated 
- *              page evicts it, and re-uses the H5FD_pb_pageheader_t 
+ *              selects an eviction candidate. If dirty, flushes the associated 
+ *              page then evicts it, and re-uses the H5FD_pb_pageheader_t 
  *              structure to store the new page in the page buffer.
  *              
  *              Replacement Policy 0 == LRU (least recently used)
@@ -4005,10 +4101,10 @@ done:
 
 
 /*-----------------------------------------------------------------------------
- * Function:    H5FDpb_rp_eviction_check
+ * Function:    H5FD__pb_rp_eviction_check
  *
  * Purpose:     Testing function to return the H5FD_pb_pageheader_t structure 
- *              being evicted to compared it to the H5FD_pb_pageheader_t
+ *              being evicted to compare it to the H5FD_pb_pageheader_t
  *              expected to be evicted, ensuring the correct instance of 
  *              H5FD_pb_pageheader_t is the one being evicted.
  *
@@ -4049,6 +4145,82 @@ H5FD__pb_rp_eviction_check(H5FD_t *_file, haddr_t *current_rp_addrs)
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FDpb_rp_eviction_check() */
+
+
+
+/*-----------------------------------------------------------------------------
+ * Function:    H5FD__pb_rp_invalid_check
+ *
+ * Purpose:     Testing function to check if a page that was invalidated in the
+ *              page buffer is correctly skipped over when searching for it.
+ *
+ * Return:      Success:    NULL
+ * 
+ *              Failure:    pointer to invalid H5FD_pb_pageheader_t structure.
+ *-----------------------------------------------------------------------------
+ */
+haddr_t*
+H5FD__pb_rp_invalid_check(H5FD_t *_file, haddr_t invalid_page_addr)
+{
+    H5FD_pb_t            *file_ptr = (H5FD_pb_t *)_file;
+    H5FD_pb_pageheader_t *pageheader = NULL;
+    int32_t               i;
+    uint32_t              hash_code = 0;
+    bool                  in_pb     = FALSE;
+    haddr_t              *ret_value = NULL;
+
+    FUNC_ENTER_PACKAGE
+
+    assert( file_ptr );
+    assert( H5FD_PB_MAGIC == file_ptr->magic );
+
+    pageheader = file_ptr->rp_tail_ptr;
+
+    /* Double check the invalidated page is actually in the page buffer */
+    i = 0;
+    while ( pageheader ) {
+
+        assert( pageheader) ;
+        assert( pageheader->magic == H5FD_PB_PAGEHEADER_MAGIC );
+
+        if ( invalid_page_addr == pageheader->page_addr )
+        {
+            in_pb = TRUE;
+            break;
+        }
+        i++;
+        pageheader = pageheader->rp_prev_ptr;
+
+    }
+
+    /* If the invalid page isn't in the page buffer throw an error */
+    if ( ! in_pb )
+    {
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, &invalid_page_addr, "Page isn't in page buffer.");
+    }
+    /* Ensure the page is marked invalid */
+    else
+    {
+        if ( (pageheader->flags & H5FD_PB_INVALID_FLAG) == 0 )
+            HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, &invalid_page_addr, "Page isn't marked invalid");
+    }
+
+    /* Search the page buffer for the invalid page */
+    hash_code = H5FD__pb_calc_hash_code(file_ptr, invalid_page_addr);
+
+    pageheader = H5FD__pb_ht_search_pageheader(file_ptr, invalid_page_addr, hash_code);
+
+    /* If not NULL, the invalid page was found and wasn't skipped over, throw error */
+    if ( pageheader )
+    {
+        HGOTO_ERROR(H5E_VFL, H5E_SYSTEM, &invalid_page_addr, "Invalid page was found in page buffer");
+    }
+
+done:
+
+    FUNC_LEAVE_NOAPI(ret_value)
+
+} /* end H5FD__pb_rp_invalid_check() */
 
 
 
