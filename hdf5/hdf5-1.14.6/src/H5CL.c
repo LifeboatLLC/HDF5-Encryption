@@ -65,6 +65,55 @@
 
 /*******************************************************************************
  *
+ * Function:    H5CLget_vfd_config_from_file_and_set_in_fapl
+ *
+ * Purpose:     Give a path to a config file and a fapl_id, opens the config file
+ *              and reads the VFD configuration data and stores that data into
+ *              the fapl from the provided fapl_id.
+ * 
+ *
+ * Return:      Success:        non-negative
+ *              Failure:        negative
+ *
+ * Changes:
+ *
+ *    None.
+ *
+ *******************************************************************************/
+
+herr_t
+H5CLget_vfd_config_from_file_and_set_in_fapl(const char *config_path, hid_t fapl_id)
+{
+    char       *vfd_config_str_ptr = NULL;
+
+    herr_t      ret_value = SUCCEED;
+
+    FUNC_ENTER_API(FAIL)
+
+    assert(fapl_id != H5I_INVALID_HID);
+    assert(config_path);
+
+    /* Read the VFD configure string from the config file */
+    if ( H5CL_load_config_string_from_file(config_path, &vfd_config_str_ptr) < 0 )
+        HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't get config string from file.");
+
+    /* Set the VFD configure string in the fapl */
+    if ( H5CL_load_vfd_config_str_into_fapl(fapl_id, vfd_config_str_ptr) < 0 )
+        HGOTO_ERROR(H5E_PLIST, H5E_CANTSET, FAIL, "unable to set vfd config in fapl");
+
+
+done:
+
+    if ( vfd_config_str_ptr )
+        free(vfd_config_str_ptr);
+
+    FUNC_LEAVE_API(ret_value)
+
+} /* end H5CLget_vfd_config_from_file_and_set_in_fapl() */
+
+
+/*******************************************************************************
+ *
  * Function:    H5CL_load_vfd_config_str_into_fapl
  *
  * Purpose:     Given a vfd configuration string, and possibly a fapl_id, 
@@ -2126,7 +2175,7 @@ done:
  *----------------------------------------------------------------------------
  */
 herr_t 
-H5CL_load_config_string_from_file(const char *file_name, char **cfg_str_ptr_ptr)
+H5CL_load_config_string_from_file(const char *file_path, char **cfg_str_ptr_ptr)
 {
     struct stat st;
     size_t      num_chars;
@@ -2141,12 +2190,12 @@ H5CL_load_config_string_from_file(const char *file_name, char **cfg_str_ptr_ptr)
 
     *cfg_str_ptr_ptr = NULL;
 
-    if ( file_name == NULL || file_name[0] == '\0' )
-        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "file_name cannot be blank");
+    if ( file_path == NULL || file_path[0] == '\0' )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "file_path cannot be blank");
 
     /* Not using realpath() now. Should be fine in UNIX type OS's, not sure about others */
 
-    if ( stat(file_name, &st) != 0 )
+    if ( stat(file_path, &st) != 0 )
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "could not stat file");
 
     if ( !S_ISREG(st.st_mode) )
@@ -2159,7 +2208,7 @@ H5CL_load_config_string_from_file(const char *file_name, char **cfg_str_ptr_ptr)
     if ( !buf )
         HGOTO_ERROR(H5E_INTERNAL, H5E_CANTALLOC, FAIL, "unable to allocate string buffer");
 
-    file = fopen(file_name, "rb");
+    file = fopen(file_path, "rb");
     if ( !file ) {
         HGOTO_ERROR(H5E_FILE, H5E_CANTOPENFILE, FAIL, "unable to open file");
     }
