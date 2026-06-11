@@ -65,7 +65,7 @@
 
 /*******************************************************************************
  *
- * Function:    H5CLget_vfd_config_from_file_and_set_in_fapl
+ * Function:    H5CLset_config_from_file
  *
  * Purpose:     Give a path to a config file and a fapl_id, opens the config file
  *              and reads the VFD configuration data and stores that data into
@@ -82,7 +82,7 @@
  *******************************************************************************/
 
 herr_t
-H5CLget_vfd_config_from_file_and_set_in_fapl(const char *config_path, hid_t fapl_id)
+H5CLset_config_from_file(const char *config_path, hid_t fapl_id)
 {
     char       *vfd_config_str_ptr = NULL;
 
@@ -109,7 +109,7 @@ done:
 
     FUNC_LEAVE_API(ret_value)
 
-} /* end H5CLget_vfd_config_from_file_and_set_in_fapl() */
+} /* end H5CLset_config_from_file() */
 
 
 /*******************************************************************************

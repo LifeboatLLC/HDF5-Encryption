@@ -66,14 +66,14 @@
  * \param[in] fapl_id index ID for the fapl to set the VFD configuration data
  * \return \herr_t
  *
- * \details H5CLget_vfd_config_from_file_and_set_in_fapl() opens the file from
+ * \details H5CLset_config_from_file() opens the file from
  *          the config_path parameter and reads the configuration data in the
  *          file. Then stores that configuration data into the fapl from the
  *          provided fapl_id.
  *
  * \since 1.14.6
  */
-H5_DLL herr_t H5CLget_vfd_config_from_file_and_set_in_fapl(const char *config_path, hid_t fapl_id);
+H5_DLL herr_t H5CLset_config_from_file(const char *config_path, hid_t fapl_id);
 
 
 
