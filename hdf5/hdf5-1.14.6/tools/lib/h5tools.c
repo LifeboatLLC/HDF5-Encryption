@@ -21,6 +21,8 @@
 #include "h5tools_utils.h"
 #include "H5private.h"
 
+#include "H5CLpublic.h"
+
 #ifdef H5_TOOLS_DEBUG
 /* global debug variables */
 int H5tools_INDENT_g = 0;
@@ -79,12 +81,23 @@ const char *volnames[] = {
  *
  */
 const char *drivernames[] = {
-    [SEC2_VFD_IDX] = "sec2",       [DIRECT_VFD_IDX] = "direct", [LOG_VFD_IDX] = "log",
-    [WINDOWS_VFD_IDX] = "windows", [STDIO_VFD_IDX] = "stdio",   [CORE_VFD_IDX] = "core",
-    [FAMILY_VFD_IDX] = "family",   [SPLIT_VFD_IDX] = "split",   [MULTI_VFD_IDX] = "multi",
-    [MPIO_VFD_IDX] = "mpio",       [MIRROR_VFD_IDX] = "mirror", [SPLITTER_VFD_IDX] = "splitter",
-    [ROS3_VFD_IDX] = "ros3",       [HDFS_VFD_IDX] = "hdfs",     [SUBFILING_VFD_IDX] = H5FD_SUBFILING_NAME,
-    [ONION_VFD_IDX] = "onion",
+    [SEC2_VFD_IDX]      = "sec2",
+    [DIRECT_VFD_IDX]    = "direct", 
+    [LOG_VFD_IDX]       = "log",
+    [WINDOWS_VFD_IDX]   = "windows", 
+    [STDIO_VFD_IDX]     = "stdio",   
+    [CORE_VFD_IDX]      = "core",
+    [FAMILY_VFD_IDX]    = "family",
+    [SPLIT_VFD_IDX]     = "split",
+    [MULTI_VFD_IDX]     = "multi",
+    [MPIO_VFD_IDX]      = "mpio",
+    [MIRROR_VFD_IDX]    = "mirror", 
+    [SPLITTER_VFD_IDX]  = "splitter",
+    [ROS3_VFD_IDX]      = "ros3",
+    [HDFS_VFD_IDX]      = "hdfs",
+    [SUBFILING_VFD_IDX] = H5FD_SUBFILING_NAME,
+    [ONION_VFD_IDX]     = "onion",
+    [CRYPT_VFD_IDX]     = "crypt"
 };
 
 #define NUM_VOLS    (sizeof(volnames) / sizeof(volnames[0]))
@@ -591,6 +604,22 @@ h5tools_set_fapl_vfd(hid_t fapl_id, h5tools_vfd_info_t *vfd_info)
                     H5TOOLS_GOTO_ERROR(FAIL, "Onion VFD info is invalid");
                 if (H5Pset_fapl_onion(fapl_id, (const H5FD_onion_fapl_info_t *)vfd_info->info) < 0)
                     H5TOOLS_GOTO_ERROR(FAIL, "H5Pset_fapl_onion() failed");
+            }
+            else if (!strcmp(vfd_info->u.name, drivernames[CRYPT_VFD_IDX])) 
+            {
+                const char *config_path = NULL;
+
+                config_path = getenv(HDF5_VFD_CONFIG_PATH);
+
+                if ( config_path && *config_path )
+                {
+                    if ( H5CLget_vfd_config_from_file_and_set_in_fapl(config_path, fapl_id) < 0 )
+                        H5TOOLS_GOTO_ERROR(FAIL, "Failed to read config str from file and set config in fapl");
+                }
+                else 
+                {
+                    H5TOOLS_GOTO_ERROR(FAIL, "environment variable for path to config file is NULL");
+                }
             }
             else {
                 /*
