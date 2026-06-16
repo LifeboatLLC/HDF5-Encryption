@@ -82,7 +82,7 @@
  *******************************************************************************/
 
 herr_t
-H5CLset_config_from_file(const char *config_path, hid_t fapl_id)
+H5CLset_config_from_file(hid_t fapl_id, const char *config_path)
 {
     char       *vfd_config_str_ptr = NULL;
 
