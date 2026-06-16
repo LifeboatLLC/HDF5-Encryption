@@ -613,7 +613,7 @@ h5tools_set_fapl_vfd(hid_t fapl_id, h5tools_vfd_info_t *vfd_info)
 
                 if ( config_path && *config_path )
                 {
-                    if ( H5CLset_config_from_file(config_path, fapl_id) < 0 )
+                    if ( H5CLset_config_from_file(fapl_id, config_path) < 0 )
                         H5TOOLS_GOTO_ERROR(FAIL, "Failed to read config str from file and set config in fapl");
                 }
                 else 

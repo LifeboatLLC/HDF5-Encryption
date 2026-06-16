@@ -73,7 +73,7 @@
  *
  * \since 1.14.6
  */
-H5_DLL herr_t H5CLset_config_from_file(const char *config_path, hid_t fapl_id);
+H5_DLL herr_t H5CLset_config_from_file(hid_t fapl_id, const char *config_path);
 
 
 

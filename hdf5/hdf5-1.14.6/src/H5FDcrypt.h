@@ -62,6 +62,9 @@
 /** The default minimum ciphertext page size in bytes */
 #define H5FD_CRYPT_DEFAULT_MINIMUM_CIPHERTEXT_PAGE_SIZE 4096
 
+/** Macro for enironment variable to set the path to the key file */
+#define HDF5_CRYPT_KEY_PATH "HDF5_CRYPT_KEY_PATH"
+
 
 /******************************************************************************
  * 

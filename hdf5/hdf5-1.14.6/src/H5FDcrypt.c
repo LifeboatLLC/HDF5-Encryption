@@ -181,6 +181,9 @@ H5FD_crypt_vfd_config_t test_vfd_config = {
 };
 
 
+bool secure_memory_allocated_g = FALSE;
+
+
 /*
  * These macros check for overflow of various quantities.  These macros
  * assume that HDoff_t is signed and haddr_t and size_t are unsigned.
@@ -232,6 +235,9 @@ static herr_t  H5FD__crypt_fapl_free(void *_fapl);
 static H5FD_t *H5FD__crypt_open(const char *name, unsigned flags, hid_t fapl_id, haddr_t maxaddr);
 static herr_t  H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id);
 static herr_t  H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * config_ptr);
+#if 1
+static herr_t  H5FD__crypt_get_key_from_file(H5FD_crypt_vfd_config_t * config_ptr, const char *file_path);
+#endif
 static herr_t  H5FD__crypt_verify_config(const H5FD_crypt_vfd_config_t * config_ptr);
 static herr_t  H5FD__crypt_close(H5FD_t *_file);
 static int     H5FD__crypt_cmp(const H5FD_t *_f1, const H5FD_t *_f2);
@@ -273,7 +279,8 @@ static herr_t  H5FD__crypt_decrypt_page(H5FD_crypt_t *file_ptr, unsigned char *c
                                     unsigned char *plaintext);
 static herr_t  H5FD__crypt_write_first_page(H5FD_crypt_t *file_ptr);
 static herr_t  H5FD__crypt_write_second_page(H5FD_crypt_t *file_ptr);
-static void    H5FD__crypt_init_gcrypt_library(void);
+static herr_t  H5FD__crypt_init_gcrypt_library(void);
+static herr_t  H5FD__crypt_close_gcrypt_memory(void);
 
 static const H5FD_class_t H5FD_crypt_g = {
     H5FD_CLASS_VERSION,              /* struct version       */
@@ -355,12 +362,15 @@ H5FL_DEFINE_STATIC(H5FD_crypt_vfd_config_t);
  * Return:      SUCCEED/FAIL
  *-----------------------------------------------------------------------------
  */
-static void
+static herr_t
 H5FD__crypt_init_gcrypt_library(void)
 {
+    herr_t ret_value = SUCCEED;
+
+    FUNC_ENTER_PACKAGE
+
     if (!gcry_check_version(GCRYPT_VERSION)) {
-        perror("libgcrypt version mismatch\n");
-        exit(2);
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "libgcrypt version mismatch");
     }
 
     /**
@@ -381,6 +391,13 @@ H5FD__crypt_init_gcrypt_library(void)
 
     /* Let libgcrypt know that initialization is finished */
     gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
+
+    secure_memory_allocated_g = TRUE;
+
+done:
+
+    FUNC_LEAVE_NOAPI(ret_value)
+
 }
 
 
@@ -399,16 +416,19 @@ H5FD_crypt_init(void)
 {
     hid_t ret_value = H5I_INVALID_HID;
 
-    FUNC_ENTER_NOAPI_NOERR
+    FUNC_ENTER_NOAPI(H5I_INVALID_HID)
 
     H5FD_CRYPT_LOG_CALL(__func__);
 
     if (H5I_VFL != H5I_get_type(H5FD_CRYPT_g)) {
         H5FD_CRYPT_g = H5FDregister(&H5FD_crypt_g);
-        H5FD__crypt_init_gcrypt_library();
+        if ( H5FD__crypt_init_gcrypt_library() < 0 )
+            HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, H5I_INVALID_HID, "failed to initialize gcrypt");
     }
 
     ret_value = H5FD_CRYPT_g;
+
+done:
 
     FUNC_LEAVE_NOAPI(ret_value)
 
@@ -518,6 +538,15 @@ H5Pset_fapl_crypt(hid_t fapl_id, H5FD_crypt_vfd_config_t *vfd_config)
         HGOTO_ERROR(H5E_VFL, H5E_CANTSET, FAIL, 
                     "can't setup driver configuration");
 
+    /**
+     * TODO: I think I search the for the key file here.
+     * make it so the key is all 0's until it's stored so we know it's 'empty'
+     */
+
+    /* Verifies valid config data */
+    if ( H5FD__crypt_verify_config(vfd_config) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
+
     ret_value = H5P_set_driver(plist_ptr, H5FD_CRYPT, info, NULL);
 
 done:
@@ -613,6 +642,11 @@ H5Pget_fapl_crypt(hid_t fapl_id, H5FD_crypt_vfd_config_t *config /*out*/)
                 (size_t)fapl_ptr->key_size);
     }
 
+    /* Verifies valid config data */
+    if ( H5FD__crypt_verify_config(config) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
+
+
     /* Copy FAPL */
     if (H5FD__copy_plist(fapl_ptr->fapl_id, &(config->fapl_id)) < 0)
         HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "can't copy underlying FAPL");
@@ -662,10 +696,6 @@ H5FD__crypt_populate_config(H5FD_crypt_vfd_config_t *vfd_config,
     /* Checks key is an appropriate size */
     if ( ( vfd_config ) && ( H5FD_CRYPT_MAX_KEY_SIZE < vfd_config->key_size ) )
         HGOTO_ERROR(H5E_ARGS, H5E_BADRANGE, FAIL, "key_size too big");
-
-    /* Verifies valid config data */
-    if ( H5FD__crypt_verify_config(vfd_config) < 0 )
-        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
 
     memset(fapl_out, 0, sizeof(H5FD_crypt_vfd_config_t));
 
@@ -950,6 +980,12 @@ H5FD__crypt_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
 
 done:
 
+    if ( ret_value == FAIL )
+    {
+        /* Free the secure memory */
+        H5FD__crypt_close_gcrypt_memory();
+    }
+
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__crypt_read() */
@@ -1086,6 +1122,12 @@ H5FD__crypt_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
 #endif
 
 done:
+
+    if ( ret_value == FAIL )
+    {
+        /* Free the secure memory */
+        H5FD__crypt_close_gcrypt_memory();
+    }
 
     FUNC_LEAVE_NOAPI(ret_value)
 
@@ -1340,6 +1382,10 @@ done:
 
             H5FL_FREE(H5FD_crypt_t, file_ptr);
         }
+
+        /* Free the secure memory */
+        H5FD__crypt_close_gcrypt_memory();
+
     } /* end if error */
 
     FUNC_LEAVE_NOAPI(ret_value)
@@ -1418,7 +1464,9 @@ H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id)
 
         /* first, load the configuration with default values. 
          * must do this, as the configuration string may not define all values -- which 
-         * means that the initial values must be reasonable where possible.
+         * means that the initial values must be reasonable where possible. 
+         * The exception is key size, because it is either defined, or calculated
+         * from the key itself.  
          */
         file_ptr->fa.magic                  = H5FD_CRYPT_CONFIG_MAGIC;
         file_ptr->fa.version                = H5FD_CURR_CRYPT_VFD_CONFIG_VERSION;
@@ -1427,7 +1475,7 @@ H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id)
         file_ptr->fa.encryption_buffer_size = H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE;
         file_ptr->fa.cipher                 = H5FD_CRYPT_DEFAULT_CIPHER;
         file_ptr->fa.cipher_block_size      = H5FD_CRYPT_DEFAULT_CIPHER_BLOCK_SIZE;
-        file_ptr->fa.key_size               = H5FD_CRYPT_DEFAULT_KEY_SIZE;
+        file_ptr->fa.key_size               = 0;
         file_ptr->fa.iv_size                = H5FD_CRYPT_DEFAULT_IV_SIZE;
         file_ptr->fa.mode                   = H5FD_CRYPT_DEFAULT_MODE;
         file_ptr->fa.fapl_id                = H5P_DEFAULT;
@@ -1441,10 +1489,10 @@ H5FD__crypt_load_config(H5FD_crypt_t * file_ptr, hid_t crypt_fapl_id)
          */
         if ( H5FD__crypt_parse_config(config_str, &(file_ptr->fa)) < 0 )
             HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "can't parse configuration string");
-
-        /* Verify the encryption configuration data */
-        if ( H5FD__crypt_verify_config(&(file_ptr->fa)) < 0 )
-            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
+#if 0
+        if ( H5FD__crypt_get_key_from_file(&(file_ptr->fa)) < 0 )
+            HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, FAIL, "can't get key from key file");
+#endif
 
         /* save a copy of the configuration string */
         file_ptr->config_str = H5MM_strdup(config_str);
@@ -1517,8 +1565,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
 
-                    /* need range check */
-
                     config_ptr->plaintext_page_size = (size_t)(nv_pairs[i].int_val);
 
                 } else {
@@ -1529,8 +1575,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
             } else if ( 0 == strcmp("ciphertext_page_size", nv_pairs[i].name_ptr) ) {
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
-
-                    /* need range check */
 
                     config_ptr->ciphertext_page_size = (size_t)(nv_pairs[i].int_val);
 
@@ -1543,8 +1587,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
 
-                    /* need range check */
-
                     config_ptr->encryption_buffer_size = (size_t)(nv_pairs[i].int_val);
 
                 } else {
@@ -1555,8 +1597,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
             } else if ( 0 == strcmp("cipher", nv_pairs[i].name_ptr) ) {
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
-
-                    /* need range check */
 
                     config_ptr->cipher = (int)(nv_pairs[i].int_val);
 
@@ -1569,8 +1609,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
 
-                    /* need range check */
-
                     config_ptr->cipher_block_size = (size_t)(nv_pairs[i].int_val);
 
                 } else {
@@ -1581,8 +1619,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
             } else if ( 0 == strcmp("key_size", nv_pairs[i].name_ptr) ) {
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
-
-                    /* need range check */
 
                     config_ptr->key_size = (size_t)(nv_pairs[i].int_val);
 
@@ -1603,15 +1639,23 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
 
                 if ( H5CL_VAL_BB == nv_pairs[i].val_type ) {
 
-                    /* need range check */
+                    if ( have_key )
+                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Already have key.");
 
                     reported_key_size = nv_pairs[i].len;
+                    
+                    if ( have_key_size )
+                    {
+                        if ( reported_key_size != config_ptr->key_size )
+                            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "key size / actual key size mismatch - 2.");
+                    }
+                    else
+                    {
+                        config_ptr->key_size = reported_key_size;
+                    }
 
                     if ( H5FD_CRYPT_MAX_KEY_SIZE < reported_key_size ) 
                         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Actual key size > H5FD_CRYPT_MAX_KEY_SIZE.");
-
-                    if ( ( have_key_size ) && ( reported_key_size != config_ptr->key_size ) )
-                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "key size / actual key size mismatch - 2.");
 
                     memcpy(&(config_ptr->key[0]), (nv_pairs[i].vlen_val_ptr), reported_key_size);
 
@@ -1622,11 +1666,37 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
                     HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "parameter name / type mismatch.");
                 }
 
+            } else if ( 0 == strcmp("key_path", nv_pairs[i].name_ptr) ) {
+
+                if ( H5CL_VAL_QSTR == nv_pairs[i].val_type ) {
+
+                    if ( have_key )
+                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Already have key.");
+
+                    if ( H5FD__crypt_get_key_from_file(config_ptr, nv_pairs[i].vlen_val_ptr) < 0 )
+                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Failed getting key from path");
+
+                    have_key = TRUE;
+
+                    if ( have_key_size )
+                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Already have key size.");
+
+                    if ( config_ptr->key_size > 0 )
+                    {
+                        have_key_size = TRUE;
+                    }
+                    else
+                        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid key size");
+                        
+
+                } else {
+
+                    HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "parameter name / type mismatch.");
+                }
+
             } else if ( 0 == strcmp("iv_size", nv_pairs[i].name_ptr) ) {
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
-
-                    /* need range check */
 
                     config_ptr->iv_size = (size_t)(nv_pairs[i].int_val);
 
@@ -1638,8 +1708,6 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
             } else if ( 0 == strcmp("mode", nv_pairs[i].name_ptr) ) {
 
                 if ( H5CL_VAL_INT == nv_pairs[i].val_type ) {
-
-                    /* need range check */
 
                     config_ptr->mode = (int)(nv_pairs[i].int_val);
 
@@ -1744,12 +1812,81 @@ H5FD__crypt_parse_config(const char * config_str, H5FD_crypt_vfd_config_t * conf
             HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "can't take down nv_pair.");
     }
 
+
+    /* Verify all the config values are valid */
+    if ( H5FD__crypt_verify_config(config_ptr) < 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Invalid encryption configuration data");
+
+
 done:
 
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* H5FD__crypt_parse_config() */
 
+#if 1
+/**
+ * 
+ */
+static herr_t
+H5FD__crypt_get_key_from_file(H5FD_crypt_vfd_config_t * config_ptr, const char *file_path)
+{
+    //const char *file_path = NULL;
+    FILE       *file      = NULL;
+    struct stat st;
+
+    herr_t      ret_value = SUCCEED;
+
+    FUNC_ENTER_PACKAGE
+
+    assert(config_ptr);
+    assert(config_ptr->magic == H5FD_CRYPT_CONFIG_MAGIC);
+
+    /* If the file path is NULL, get the path from the environment variable */
+    if ( ! file_path )
+    {
+        file_path = getenv(HDF5_CRYPT_KEY_PATH);
+    }
+
+    if ( file_path == NULL || file_path[0] == '\0' )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "file_path cannot be blank");
+
+    if ( stat(file_path, &st) != 0 )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "could not stat file");
+
+    if ( !S_ISREG(st.st_mode) )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "not a regular file");
+
+    if ( st.st_size <= 0 )
+        HGOTO_ERROR(H5E_FILE, H5E_BADFILE, FAIL, "file is empty");
+
+    if ( st.st_size > H5FD_CRYPT_MAX_KEY_SIZE )
+        HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "key size > H5FD_CRYPT_MAX_KEY_SIZE");
+
+
+    /* Open the file */
+    file = fopen(file_path, "rb");
+    if ( !file ) {
+        HGOTO_ERROR(H5E_FILE, H5E_CANTOPENFILE, FAIL, "unable to open file");
+    }
+
+    if( (config_ptr->key_size = fread(config_ptr->key, 1, (size_t)st.st_size, file)) != 
+                                                                    (size_t)st.st_size )
+    {
+        if (ferror(file)) {
+            HGOTO_ERROR(H5E_FILE, H5E_READERROR, FAIL, "I/O error during read");
+        } else {
+            HGOTO_ERROR(H5E_FILE, H5E_READERROR, FAIL, "unexpected EOF");
+        }
+    }
+    
+
+done:
+
+    FUNC_LEAVE_NOAPI(ret_value);
+
+} /* H5FD__crypt_get_key_from_file() */
+#endif
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__crypt_verify_config
@@ -1838,7 +1975,7 @@ H5FD__crypt_verify_config(const H5FD_crypt_vfd_config_t *config_ptr)
     else
     {
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
-                                        "plaintext page size is not within valid parameters");
+                                        "plaintext page size is not within valid range");
     }
 
     /* Verify ciphertext page size */
@@ -1846,7 +1983,7 @@ H5FD__crypt_verify_config(const H5FD_crypt_vfd_config_t *config_ptr)
     {
         if ( ciphertext_size != plaintext_size + iv_size )
             HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, 
-                                        "ciphertext page size is not within valid parameters");
+                                        "ciphertext page size is not within valid range");
     }
 
     /* Verify encryption buffer size */
@@ -1913,14 +2050,39 @@ H5FD__crypt_close(H5FD_t *_file)
     file_ptr = H5FL_FREE(H5FD_crypt_t, file_ptr);
     file_ptr = NULL;
 
-    /* Freeing the secure memory */
-    gcry_control(GCRYCTL_TERM_SECMEM);
-
 done:
+
+    /* Free the secure memory */
+    H5FD__crypt_close_gcrypt_memory();
 
     FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FD__crypt_close() */
+
+/*-----------------------------------------------------------------------------
+ * Function:    H5FD__crypt_close_gcrypt_memory
+ *
+ * Purpose:     Calls the libgcrypt function to zero and free the secure memory
+ *              pool. If the secure memory was already free'd or was never 
+ *              allocated, the libgcrypt function does nothing.
+ *
+ * Return:      SUCCEED (can't fail)
+ *-----------------------------------------------------------------------------
+ */
+static herr_t
+H5FD__crypt_close_gcrypt_memory(void)
+{
+    FUNC_ENTER_PACKAGE_NOERR 
+
+    if ( secure_memory_allocated_g )
+    {
+        /* Freeing the secure memory */
+        gcry_control(GCRYCTL_TERM_SECMEM);
+    }
+
+    FUNC_LEAVE_NOAPI(SUCCEED);
+
+} /* end H5FD__crypt_close_gcrypt_memory() */
 
 /*-----------------------------------------------------------------------------
  * Function:    H5FD__crypt_get_eoa
@@ -3155,7 +3317,7 @@ H5FD__crypt_encrypt_page(H5FD_crypt_t *file_ptr, unsigned char *ciphertext_buf,
 
 
     /* Initializes the handle with the cipher and mode (AES256, CBC) */
-    if ( 0 != (err = gcry_cipher_open(&handle, cipher, mode, 0)) ) {
+    if ( 0 != (err = gcry_cipher_open(&handle, cipher, mode, GCRY_CIPHER_SECURE)) ) {
 
         snprintf(error_string, (size_t)256, "gcrypt error: %s", 
                         gcry_strerror(err));
