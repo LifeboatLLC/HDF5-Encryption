@@ -110,9 +110,12 @@
  *      key sizes. An example is AES128 and AES256 which are both AES 
  *      ciphers but have a 128 key size and a 256 key size respectively.
  * 
- * unit8_t key[H5FD_CRYPT_MAX_KEY_SIZE]:
- *      Buffer to hold the key. Next iteration the key will be in a secure
- *      memory pool made by the libgcrypt library.
+ * key_path (char *):
+ *      Path to a file that stores the encryption key to encrypt/decrypt
+ *      the hdf5 file.
+ * 
+ * key (uint8_t *):
+ *      Pointer to the encryption key stored in libgcrypt's secure memory pool.
  * 
  * iv_size (size_t):
  *      Size of the initialization vector (IV) in bytes. The mode determines 
@@ -132,21 +135,20 @@
 typedef struct H5FD_crypt_vfd_config_t {
     int32_t      magic;            
     unsigned int version;          
-    size_t plaintext_page_size;     
-    size_t ciphertext_page_size;    
-    size_t encryption_buffer_size;       
-    int cipher;                     
+    size_t       plaintext_page_size;     
+    size_t       ciphertext_page_size;    
+    size_t       encryption_buffer_size;       
+    int          cipher;                     
+    size_t       cipher_block_size;
 
-    /* add fields for key, etc */
-    size_t cipher_block_size;        
-    size_t key_size;                
+    size_t       key_size;
+    char        *key_path;
+    uint8_t     *key;
 
-    uint8_t key[H5FD_CRYPT_MAX_KEY_SIZE];
+    size_t       iv_size;                 
+    int          mode;          
 
-    size_t iv_size;                 
-    int mode;          
-
-    hid_t fapl_id;                 
+    hid_t        fapl_id;                 
 } H5FD_crypt_vfd_config_t;
 //! <!-- [H5FD_crypt_vfd_config_t_snip] -->
 
