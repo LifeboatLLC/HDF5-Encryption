@@ -97,7 +97,7 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
  */
 #define PB_TEST_ALL_SIZES 0
 #define PB_TEST_4M        0
-#define PB_DEBUG_QUICK    1
+#define PB_DEBUG_QUICK    0
 
 #define CRYPT_DS_SIZE     8
 #define CRYPT_DATASET_NAME "dataset"
@@ -105,7 +105,7 @@ static const char *FILENAME[] = {"sec2_file",            /*0*/
  * Used to quickly go through the tests with a single set of plaintext and ciphertext
  * sizes and buffer for faster debugger, instead of testing multiple sizes.
  */
-#define CRYPT_DEBUG_QUICK 1
+#define CRYPT_DEBUG_QUICK 0
 
 /* Macro: HEXPRINT()
  * Helper macro to pretty-print hexadecimal output of a buffer of known size.
@@ -260,8 +260,11 @@ static int crypt_test_invalid_config(bool cl_config);
 static int crypt_test_invalid_config_helper(bool cl_config, size_t pt_size, size_t ct_size, size_t buf_size, 
                             int32_t cipher, size_t block_size, size_t key_size, size_t iv_size, int32_t mode);
 static int crypt_test_invalid_addrs_and_buffs(bool cl_config);
-static int crypt_test_using_env_var(void);
-static int crypt_test_invalid_config_using_env_var(void);
+static int crypt_test_with_cl_using_env(void);
+static int crypt_test_invalid_config_using_env(void);
+static int crypt_test_with_cl_and_key_from_files(void);
+static int crypt_test_using_key_path_env(bool cl_config);
+static int create_files_for_crypt(const char *file_name, const char *config_str, char *file_path, int file_type);
 static int run_crypt_test(const struct crypt_dataset_def *data, const hid_t sub_fapl_id, bool cl_config);
 static int crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl_config);
 static int crypt_create_single_file_at(const char *filename, hid_t fapl_id, const struct crypt_dataset_def *data);
@@ -6839,12 +6842,12 @@ pb_test_invalid_addrs_and_buffs(bool cl_config)
     }
 
 
-    if (H5Pclose(fapl_id) < 0) {
-        PB_TEST_FAULT("can't close fapl\n");
-    }
-
     if (H5FDclose(file_ptr) < 0) {
         PB_TEST_FAULT("can't close file\n");
+    }
+
+    if (H5Pclose(fapl_id) < 0) {
+        PB_TEST_FAULT("can't close fapl\n");
     }
 
 done:
@@ -6852,8 +6855,8 @@ done:
     if (ret_value < 0) {
         H5E_BEGIN_TRY
         {
-            H5Pclose(fapl_id);
             H5FDclose(file_ptr);
+            H5Pclose(fapl_id);
         }
         H5E_END_TRY
     }
@@ -7020,16 +7023,16 @@ pb_test_using_env_var(void)
      * Close fapl_id and file_ptr, before closing library 
      * to set environment variables to default values.
      */
-    if ( fapl_id != H5I_INVALID_HID )
-    {
-        H5Pclose(fapl_id);
-        fapl_id = H5I_INVALID_HID;
-    }
-    
     if ( file_ptr )
     {
         H5FDclose(file_ptr);
         file_ptr = NULL;
+    }
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+        fapl_id = H5I_INVALID_HID;
     }
 
     /* Close the library */
@@ -7060,14 +7063,14 @@ pb_test_using_env_var(void)
 
 done:
 
-    if ( fapl_id != H5I_INVALID_HID )
-    {
-        H5Pclose(fapl_id);
-    }
-    
     if ( file_ptr )
     {
         H5FDclose(file_ptr);
+    }
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
     }
 
     if (page) 
@@ -7196,16 +7199,17 @@ pb_test_invalid_config_using_env_var(void)
      * Close fapl_id and file_ptr, before closing library 
      * to set environment variables to default values.
      */
-    if ( fapl_id != H5I_INVALID_HID )
-    {
-        H5Pclose(fapl_id);
-        fapl_id = H5I_INVALID_HID;
-    }
-    
     if ( file_ptr )
     {
         H5FDclose(file_ptr);
         file_ptr = NULL;
+    }
+
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+        fapl_id = H5I_INVALID_HID;
     }
 
     /* Close the library */
@@ -7237,14 +7241,14 @@ pb_test_invalid_config_using_env_var(void)
 
 done:
 
-    if ( fapl_id != H5I_INVALID_HID )
-    {
-        H5Pclose(fapl_id);
-    }
-    
     if ( file_ptr )
     {
         H5FDclose(file_ptr);
+    }
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
     }
 
     if ( env_set )
@@ -7662,10 +7666,41 @@ compare_crypt_config_info(hid_t fapl_id, H5FD_crypt_vfd_config_t *info)
         CRYPT_TEST_FAULT("cipher_block_size mismatch\n");
     }
 
-    if (info->key_size != fetched_info->key_size) {
-        fprintf(stderr, "key_size mismatch: expected %zu, got %zu\n",
-                info->key_size, fetched_info->key_size);
-        CRYPT_TEST_FAULT("key_size mismatch\n");
+    if (info->key_size != fetched_info->key_size) 
+    {
+        /**
+         * If info->key_size == 0 and info->key == NULL, the configuration 
+         * is being tested that it can load the key and key size from a file
+         * and these fields won't have been set in info.
+         */
+        if ( info->key_size != 0 && info->key )
+        {
+            fprintf(stderr, "key_size mismatch: expected %zu, got %zu\n",
+                    info->key_size, fetched_info->key_size);
+            CRYPT_TEST_FAULT("key_size mismatch\n");
+        }
+    }
+
+    /**
+     * If not NULL, ensure it matches,
+     * but if NULL, ensure info->key_path is also NULL.
+     */
+    if ( fetched_info->key_path )
+    {
+        if ( strcmp(info->key_path, fetched_info->key_path) != 0 ) {
+            fprintf(stderr, "key_path mismatch: expected %s, got %s\n",
+                    info->key_path, fetched_info->key_path);
+            CRYPT_TEST_FAULT("key_path mismatch\n");
+        }
+    }
+    else
+    {
+        if ( info->key_path )
+        {
+            fprintf(stderr, "key_path mismatch: expected %s, got %s\n",
+                    info->key_path, fetched_info->key_path);
+            CRYPT_TEST_FAULT("key_path mismatch\n");
+        }
     }
 
     if (info->iv_size != fetched_info->iv_size) {
@@ -7804,12 +7839,16 @@ test_crypt_fapl(bool cl_config)
         /* cipher                 = */ 0,
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
     };
     int                      ret_value    = 0;
+
+    vfd_cfg_0.key = gcry_malloc_secure(vfd_cfg_0.key_size);
+    memcpy(vfd_cfg_0.key, H5FD_CRYPT_TEST_KEY, vfd_cfg_0.key_size);
 
 #if 0 /* debug code -- keep for a while */
     /* dump hex expression of the key */
@@ -7985,12 +8024,12 @@ crypt_test_create(char *config_str, H5FD_crypt_vfd_config_t vfd_config)
         CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure");
 
 
-    if (H5Pclose(fapl_id) < 0) {
-        CRYPT_TEST_FAULT("can't close fapl\n");
-    }
-
     if (H5FDclose(file_ptr) < 0) {
         CRYPT_TEST_FAULT("can't close file\n");
+    }
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
     }
 
 
@@ -7999,8 +8038,8 @@ done:
     if (ret_value < 0) {
         H5E_BEGIN_TRY
         {
-            H5Pclose(fapl_id);
             H5FDclose(file_ptr);
+            H5Pclose(fapl_id);
         }
         H5E_END_TRY
     }
@@ -8062,6 +8101,7 @@ crypt_test_verify_create_and_encryption(char *config_str, H5FD_crypt_vfd_config_
     size_t           iv_size           = vfd_config.iv_size;
     size_t           file_size         = 3 * ciphertext_size;
     int              cipher            = vfd_config.cipher;
+    uint8_t          bad_key[]         = "test when this key isnt correct";
     
     int              ret_value         = 0;
 
@@ -8077,11 +8117,15 @@ crypt_test_verify_create_and_encryption(char *config_str, H5FD_crypt_vfd_config_
         /* cipher                 = */ vfd_config.cipher,  
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ "test when this key isn't correct",
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
     };
+    wrong_key_config.key = malloc(wrong_key_config.key_size);
+    memcpy(wrong_key_config.key, bad_key, 32);
+
     if ( config_str )
     {
         snprintf(wrong_key_str, sizeof(wrong_key_str),
@@ -8432,11 +8476,14 @@ done:
     if (ret_value < 0) {
         H5E_BEGIN_TRY
         {
-            H5Pclose(fapl_id);
             H5FDclose(file_ptr);
+            H5Pclose(fapl_id);
         }
         H5E_END_TRY
     }
+
+    if ( wrong_key_config.key )
+        free(wrong_key_config.key);
 
     if (setup_buf)
         free(setup_buf);
@@ -8542,7 +8589,7 @@ crypt_test_write_and_read(size_t num_pages, char *config_str, H5FD_crypt_vfd_con
     /* Buffer to hold the data that will be used to test the write function */
     write_buf = malloc(size_of_pages);
     if (NULL == write_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for six_page_write_buf\n");
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
 
     /* Fill the buffer with random characters to simulate data */
     for (size_t i = 0; i < (size_of_pages); i++)
@@ -8560,7 +8607,7 @@ crypt_test_write_and_read(size_t num_pages, char *config_str, H5FD_crypt_vfd_con
     /* Buffer for the read test to try to store the page that was just written */
     read_buf = malloc(size_of_pages);
     if (NULL == read_buf)
-        CRYPT_TEST_FAULT("couldn't allocate memory for one_page_write_buf\n");
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
 
     /* Reads the data back that was just written */
     if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size_of_pages, 
@@ -8889,16 +8936,20 @@ crypt_test_invalid_config_helper(bool cl_config, size_t pt_size, size_t ct_size,
         /* cipher                 = */ cipher,  
         /* cipher_block_size      = */ block_size,
         /* key_size               = */ key_size,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ iv_size,
         /* mode                   = */ mode,
         /* fapl_id                = */ H5P_DEFAULT
     };
 
+    vfd_config.key = malloc(vfd_config.key_size);
+    memcpy(vfd_config.key, H5FD_CRYPT_TEST_KEY, vfd_config.key_size);
 
-/* setup the target file name */
+    /* setup the target file name */
     
     h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
+    HDremove(filename);
 
     /* create and initialize FAPL for the encryption VFD */
     
@@ -9013,6 +9064,8 @@ done:
         H5E_END_TRY
     }
 
+    if ( vfd_config.key )
+        free(vfd_config.key);
 
     return ret_value;
 
@@ -9076,7 +9129,8 @@ crypt_test_invalid_addrs_and_buffs(bool cl_config)
         /* cipher                 = */ 0,  
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
@@ -9086,7 +9140,10 @@ crypt_test_invalid_addrs_and_buffs(bool cl_config)
     unsigned char        *zero_buf          = NULL;
     size_t                size              = vfd_config.plaintext_page_size;
     herr_t                ret; 
-    int                   ret_value    = 0;
+    int                   ret_value         = 0;
+
+    vfd_config.key = malloc(vfd_config.key_size);
+    memcpy(vfd_config.key, H5FD_CRYPT_TEST_KEY, vfd_config.key_size);
 
     /* setup the target file name, and delete any existing instance */
     h5_fixname(FILENAME[17], vfd_config.fapl_id, filename, 1024);
@@ -9249,6 +9306,55 @@ crypt_test_invalid_addrs_and_buffs(bool cl_config)
         CRYPT_TEST_FAULT("Did not handle invalid ID error correctly\n");
 
 
+    /********************************************************************************/
+    /***** TEST READ WHEN SIZE IS 0, SHOULD SUCCEED BUT BUFFER WILL BE EMPTY *****/
+    /********************************************************************************/
+
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized read failed\n");
+    }
+
+    /* Ensure no data was read into zero_buf */
+    if (memcmp(setup_buf, zero_buf, size) != 0) 
+    {
+        for ( size_t i = 0; i < size; i++ )
+        {
+            if ( zero_buf[i] != 0 )
+            {
+                CRYPT_TEST_FAULT("zero_buf modified during zero-size read\n");
+            }
+        }
+    }
+    else
+    {
+        CRYPT_TEST_FAULT("Data read when size of read is 0\n");
+    }
+
+
+    /***********************************************************************************/
+    /***** TEST WRITE WHEN SIZE IS 0, SHOULD SUCCEED BUT NOTHING WILL BE WRITTEN *****/
+    /***********************************************************************************/
+
+    if (( ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized write failed\n");
+    }
+
+    /* Verify the zero sized write didn't actually write any data */
+    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, valid_buf)) < 0 )
+    {
+        CRYPT_TEST_FAULT("Zero sized read failed\n");
+    }
+    else
+    {
+        if (memcmp(setup_buf, valid_buf, size) != 0) 
+        {
+            CRYPT_TEST_FAULT("Data was written when size of write was 0\n");
+        }
+    }
+
+
     /**********************************************************************/
     /***** TEST READ WHEN ADDR IS NOT ON A PAGE BOUNDARY, SHOULD FAIL *****/
     /**********************************************************************/
@@ -9391,54 +9497,8 @@ crypt_test_invalid_addrs_and_buffs(bool cl_config)
         CRYPT_TEST_FAULT("Did not handle addr overflow error correctly\n");
 
 
-    /********************************************************************************/
-    /***** TEST READ WHEN SIZE IS 0, SHOULD SUCCEED BUT BUFFER WILL BE EMPTY *****/
-    /********************************************************************************/
 
-    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
-    {
-        CRYPT_TEST_FAULT("Zero sized read failed\n");
-    }
-
-    /* Ensure no data was read into zero_buf */
-    if (memcmp(setup_buf, zero_buf, size) != 0) 
-    {
-        for ( size_t i = 0; i < size; i++ )
-        {
-            if ( zero_buf[i] != 0 )
-            {
-                CRYPT_TEST_FAULT("zero_buf modified during zero-size read\n");
-            }
-        }
-    }
-    else
-    {
-        CRYPT_TEST_FAULT("Data read when size of read is 0\n");
-    }
-
-
-    /***********************************************************************************/
-    /***** TEST WRITE WHEN SIZE IS 0, SHOULD SUCCEED BUT NOTHING WILL BE WRITTEN *****/
-    /***********************************************************************************/
-
-    if (( ret = H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, 0, zero_buf)) < 0 )
-    {
-        CRYPT_TEST_FAULT("Zero sized write failed\n");
-    }
-
-    /* Verify the zero sized write didn't actually write any data */
-    if (( ret = H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, size, valid_buf)) < 0 )
-    {
-        CRYPT_TEST_FAULT("Zero sized read failed\n");
-    }
-    else
-    {
-        if (memcmp(setup_buf, valid_buf, size) != 0) 
-        {
-            CRYPT_TEST_FAULT("Data was written when size of write was 0\n");
-        }
-    }
-
+    /***** Tests end *****/
 
     if (H5Pclose(fapl_id) < 0) {
         CRYPT_TEST_FAULT("can't close fapl\n");
@@ -9472,17 +9532,20 @@ done:
         free(zero_buf);
     }
 
+    if ( vfd_config.key )
+        free(vfd_config.key);
+
     return ret_value;
 
 } /* end crypt_test_invalid_addrs_and_buffs() */
 
 
 /*-------------------------------------------------------------------------
- * Function:    crypt_test_using_env_var
+ * Function:    crypt_test_with_cl_using_env
  *
- * Purpose:     Creates a file and does a write and read test by using the
- *              configuration language set by the environment variables,
- *              HDF5_DRIVER and HDF5_DRIVER_CONFIG.
+ * Purpose:     Tests that the encryption VFD works using configuration 
+ *              language set by the environment variables HDF5_DRIVER and 
+ *              HDF5_DRIVER_CONFIG. 
  *
  * Return:      Success:        0
  *              Failure:        -1
@@ -9505,7 +9568,7 @@ done:
  *-------------------------------------------------------------------------
  */
 static int 
-crypt_test_using_env_var(void)
+crypt_test_with_cl_using_env(void)
 {
     char             filename[1024];
     hid_t            fapl_id          = H5I_INVALID_HID;
@@ -9530,8 +9593,52 @@ crypt_test_using_env_var(void)
     int              cipher; 
     int              fd               = -1;
     bool             env_set          = FALSE;
+    uint8_t         *test_key         = NULL;
 
     int              ret_value        = 0;
+
+    test_key = malloc(H5FD_CRYPT_DEFAULT_KEY_SIZE);
+    memcpy(test_key, H5FD_CRYPT_TEST_KEY, H5FD_CRYPT_DEFAULT_KEY_SIZE);
+
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], H5P_DEFAULT, filename, 1024);
+    HDremove(filename);
+
+    /* Buffer to hold the data that will be used to test the write function */
+    setup_buf = malloc(plaintext_size);
+    if (NULL == setup_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for setup_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < plaintext_size; i++)
+        setup_buf[i] = (unsigned char)rand() % 256;
+
+    /**
+     * Allocate read buffer.
+     * 
+     * NOTE: read buffer is the size of 3 ciphertext pages, due to 
+     * the using POSIX calls to read the entire file, including the 
+     * first two configuration pages and the IV blocks of the 
+     * ciphertext pages, to ensure correct data.
+     */
+    read_buf = malloc(3 * ciphertext_size);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+    /* Allocate buffer to store the data for comparison */
+    compare_buf = malloc(file_size);
+    if (NULL == compare_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
+
+    /* Allocate buffer to store the IVs for the second and third pages */
+    iv_second_page = malloc(iv_size);
+    if (NULL == iv_second_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
+    
+    iv_third_page = malloc(iv_size);
+    if (NULL == iv_third_page)
+        CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
 
 
     for ( int c = 0; c < num_ciphers; c++ )
@@ -9574,16 +9681,10 @@ crypt_test_using_env_var(void)
         if ( setenv(HDF5_DRIVER_CONFIG, config_str, 1) != 0 )
             CRYPT_TEST_FAULT("failed to set environment variable\n");
 
-
         env_set = TRUE;
 
         /* Re-open the library */
         H5open();
-
-
-        /* setup the target file name, and delete any existing instance */
-        h5_fixname(FILENAME[17], H5P_DEFAULT, filename, 1024);
-        HDremove(filename);
 
 
         /* Double check the environment variables were set correctly */
@@ -9604,12 +9705,6 @@ crypt_test_using_env_var(void)
         if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
             CRYPT_TEST_FAULT("can't create FAPL ID\n");
         }
-
-#if 0
-        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, returned_env_var) < 0) {
-            CRYPT_TEST_FAULT("can't load config string into fapl\n");
-        }
-#endif
 
         /**
          * The driver returned should be the page buffer, because it is the
@@ -9636,15 +9731,6 @@ crypt_test_using_env_var(void)
         /***** Simple Write and Read Test *****/
         /**************************************/
 
-        /* Buffer to hold the data that will be used to test the write function */
-        setup_buf = malloc(plaintext_size);
-        if (NULL == setup_buf)
-            CRYPT_TEST_FAULT("couldn't allocate memory for setup_buf\n");
-
-        /* Fill the buffer with random characters to simulate data */
-        for (size_t i = 0; i < plaintext_size; i++)
-            setup_buf[i] = (unsigned char)rand() % 256;
-
         /* set the eoa so we can write the page of data */
         if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)plaintext_size) < 0 )
             CRYPT_TEST_FAULT("couldn't set file eoa\n");
@@ -9653,19 +9739,6 @@ crypt_test_using_env_var(void)
 
         if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, setup_buf) < 0)
             CRYPT_TEST_FAULT("couldn't write data to file\n");
-
-        
-        /**
-         * Allocate read buffer.
-         * 
-         * NOTE: read buffer is the size of 3 ciphertext pages, due to 
-         * the using POSIX calls to read the entire file, including the 
-         * first two configuration pages and the IV blocks of the 
-         * ciphertext pages, to ensure correct data.
-         */
-        read_buf = malloc(3 * ciphertext_size);
-        if (NULL == read_buf)
-            CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
         
 
         /***** Read the data back that was just written, should be decrypted *****/
@@ -9701,15 +9774,6 @@ crypt_test_using_env_var(void)
         if (pread(fd, read_buf, file_size, 0) != (ssize_t)file_size)
             CRYPT_TEST_FAULT("couldn't read file using POSIX calls\n");
 
-        /* Allocate buffer to store the IVs for the second and third pages */
-        iv_second_page = malloc(iv_size);
-        if (NULL == iv_second_page)
-            CRYPT_TEST_FAULT("couldn't allocate memory for iv_second_page\n");
-        
-        iv_third_page = malloc(iv_size);
-        if (NULL == iv_third_page)
-            CRYPT_TEST_FAULT("couldn't allocate memory for iv_third_page\n");
-
         /* Copies the IV for the second page to encrypt the manually made second page */
         if (memcpy(iv_second_page, read_buf + ciphertext_size, iv_size) == NULL)
             CRYPT_TEST_FAULT("couldn't copy second page's IV from read_buf\n");
@@ -9727,12 +9791,6 @@ crypt_test_using_env_var(void)
          * Manually creating the data of the three pages into a buffer to compare
          * the read_buf with to ensure the data in the file is correct.
          */
-
-        /* Allocate buffer to store the data for comparison */
-        compare_buf = malloc(file_size);
-        if (NULL == compare_buf)
-            CRYPT_TEST_FAULT("couldn't allocate memory for compare_buf\n");
-
 
         /* Manually create the first page and store it in the compare buf */
 
@@ -9788,7 +9846,7 @@ crypt_test_using_env_var(void)
         }
 
         
-        if ( gcry_cipher_setkey(handle, H5FD_CRYPT_TEST_KEY, 32) != 0 )
+        if ( gcry_cipher_setkey(handle, test_key, 32) != 0 )
             CRYPT_TEST_FAULT("couldn't set key\n");
 
         /* Stores the second page's IV into the compare buf */
@@ -9824,7 +9882,7 @@ crypt_test_using_env_var(void)
                 CRYPT_TEST_FAULT("couldn't open cipher handle for page 3 (TWOFISH)\n");
         }
 
-        if ( gcry_cipher_setkey(handle, H5FD_CRYPT_TEST_KEY, 32) != 0 )
+        if ( gcry_cipher_setkey(handle, test_key, 32) != 0 )
             CRYPT_TEST_FAULT("couldn't set key the for page 3\n");
 
         /* Stores the third page's IV into the compare buf */
@@ -9892,19 +9950,6 @@ crypt_test_using_env_var(void)
             CRYPT_TEST_FAULT("environment variable not default\n");
 
 
-        free(setup_buf);
-        setup_buf = NULL;
-        free(compare_buf);
-        compare_buf = NULL;
-        free(read_buf);
-        read_buf = NULL;
-        free(test_phrase_buf);
-        test_phrase_buf = NULL;
-        free(iv_second_page);
-        iv_second_page = NULL;
-        free(iv_third_page);
-        iv_third_page = NULL;
-
     } /* end for ( int c = 0; c < num_ciphers; c++ ) */
 
 done:
@@ -9937,6 +9982,9 @@ done:
     if (iv_third_page)
         free(iv_third_page);
 
+    if ( test_key )
+        free(test_key);
+
     if ( env_set )
     {
         H5close();
@@ -9947,11 +9995,11 @@ done:
 
     return ret_value;
 
-} /* end crypt_test_using_env_var() */
+} /* end crypt_test_with_cl_using_env() */
 
 
 /*-------------------------------------------------------------------------
- * Function:    crypt_test_invalid_config_using_env_var
+ * Function:    crypt_test_invalid_config_using_env
  *
  * Purpose:     Tests that if the configuration data is set via the 
  *              environment variables, HDF5_DRIVER and HDF5_DRIVER_CONFIG,
@@ -9976,7 +10024,7 @@ done:
  *-------------------------------------------------------------------------
  */
 static int 
-crypt_test_invalid_config_using_env_var(void)
+crypt_test_invalid_config_using_env(void)
 {
     char             filename[1024];
     hid_t            fapl_id          = H5I_INVALID_HID;
@@ -9989,12 +10037,12 @@ crypt_test_invalid_config_using_env_var(void)
 
     char config_str[] =
         "( page_buffer "
-        "  ( ( page_size 4000 )"
+        "  ( ( page_size 4096 )"
         "    ( max_num_pages 16 )"
         "    ( replacement_policy 0 )"
         "    ( underlying_VFD "
         "      ( encryption_VFD "
-        "        ( ( plaintext_page_size  4096 )"
+        "        ( ( plaintext_page_size  4000 )"
         "          ( ciphertext_page_size 4112 )"
         "          ( encryption_buffer_size 65792 )"
         "          ( cipher 0 )"
@@ -10086,14 +10134,10 @@ crypt_test_invalid_config_using_env_var(void)
      */
     if ( fapl_id != H5I_INVALID_HID )
     {
-        H5Pclose(fapl_id);
+        if (H5Pclose(fapl_id) < 0) {
+            CRYPT_TEST_FAULT("can't close fapl\n");
+        }
         fapl_id = H5I_INVALID_HID;
-    }
-    
-    if ( file_ptr )
-    {
-        H5FDclose(file_ptr);
-        file_ptr = NULL;
     }
 
     /* Close the library */
@@ -10125,14 +10169,14 @@ crypt_test_invalid_config_using_env_var(void)
 
 done:
 
-    if ( fapl_id != H5I_INVALID_HID )
-    {
-        H5Pclose(fapl_id);
-    }
-    
     if ( file_ptr )
     {
         H5FDclose(file_ptr);
+    }
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
     }
 
     if ( env_set )
@@ -10145,7 +10189,590 @@ done:
 
     return ret_value;
 
-} /* end crypt_test_invalid_config_using_env_var() */
+} /* end crypt_test_invalid_config_using_env() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_with_cl_and_key_from_files
+ *
+ * Purpose:     Tests that the encryption VFD's configuration can be set 
+ *              via a config file (simple .txt file) and that the encryption
+ *              key can be set via separate key file (simple .txt file for
+ *              this test)
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Creates the key file with the test key and mallocs buffers
+ *              needed for the test writes and reads.
+ * 
+ *              Iterates between all valid ciphers, creating a config file,
+ *              then sets up the encryption VFD, creates a new file and 
+ *              opens it, writes a page to it, reads that page back, 
+ *              compares what was read and written to ensure they are 
+ *              correct. 
+ * 
+ *              Closes and deletes the key and config files.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int 
+crypt_test_with_cl_and_key_from_files(void)
+{
+    char             filename[1024];
+    hid_t            fapl_id          = H5I_INVALID_HID;
+    H5FD_t          *file_ptr         = NULL;
+    char             config_str[1024];
+    unsigned char   *write_buf        = NULL;
+    unsigned char   *read_buf         = NULL;
+    size_t           plaintext_size   = H5FD_CRYPT_DEFAULT_PLAINTEXT_PAGE_SIZE;
+    int32_t          cipher_array[]   = {0, 1};
+    int32_t          num_ciphers      = sizeof(cipher_array) / sizeof(cipher_array[0]);
+    int              cipher; 
+    const char      *key_file_name    = "test_key_file.txt";
+    char             key_file_path[512];
+    const char      *cl_file_name    = "test_crypt_cl_file.txt";
+    char             cl_file_path[512];
+    bool             key_file_created = FALSE;
+    bool             cl_file_created  = FALSE;
+
+    int              ret_value        = 0;
+
+    /* zero out config_str */
+    memset(&(config_str[0]), 0, sizeof(config_str));
+
+    /* Create a key file */
+    if ( create_files_for_crypt(key_file_name, NULL, key_file_path, 1) != 0 )
+        CRYPT_TEST_FAULT("failed to create and write test key to key file\n");
+
+    key_file_created = TRUE;
+
+
+    /* Buffer to hold the data that will be used to test the write function */
+    write_buf = malloc(plaintext_size);
+    if (NULL == write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (plaintext_size); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /* Buffer for the read test to try to store the page that was just written */
+    read_buf = malloc(plaintext_size);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+
+    /**
+     * Tests creating, opening, writing and reading an encrypted file with the
+     * encryption key stored in a separate key file, and the configuration string
+     * stored in a separate config file that contains the path to the key file, 
+     * for all supported ciphers.
+     */
+    for ( int c = 0; c < num_ciphers; c++ )
+    {
+        cipher = cipher_array[c];
+
+        snprintf(config_str, sizeof(config_str),
+            "( page_buffer "
+            "  ( ( page_size 4096 )"
+            "    ( max_num_pages 16 )"
+            "    ( replacement_policy 0 )"
+            "    ( underlying_VFD "
+            "      ( encryption_VFD "
+            "        ( ( plaintext_page_size  4096 )"
+            "          ( ciphertext_page_size 4112 )"
+            "          ( encryption_buffer_size 65792 )"
+            "          ( cipher %d )"
+            "          ( cipher_block_size 16 )"
+            "          ( key_path \"%s\" )"
+            "          ( iv_size 16 )"
+            "          ( mode 0 )"
+            "          ( underlying_VFD ( sec2 () ) )"
+            "        )"
+            "      )"
+            "    )"
+            "  )"
+            ")",
+            cipher,
+            key_file_path
+        );
+
+        /* Create a key file */
+        if ( create_files_for_crypt(cl_file_name, config_str, cl_file_path, 0) != 0 )
+            CRYPT_TEST_FAULT("failed to create and write test key to key file\n");
+
+        cl_file_created = TRUE;
+
+        /* setup the target file name, and delete any existing instance */
+        h5_fixname(FILENAME[17], H5P_DEFAULT, filename, 1024);
+        HDremove(filename);
+
+
+        /* create and initialize FAPL for the encryption VFD */
+
+        if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+            CRYPT_TEST_FAULT("can't create FAPL ID\n");
+        }
+
+        if ( H5CLset_config_from_file(fapl_id, cl_file_path) < 0 ) {
+            CRYPT_TEST_FAULT("can't read config str from file and load it into fapl\n");
+        }
+
+        /**
+         * The driver returned should be the page buffer, because it is the
+         * top most VFD in the VFD stack set by the environment variables.
+         */
+        if (H5Pget_driver(fapl_id) != H5FD_PB) {
+            CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+        }
+
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+
+
+        /* Opens a file that doesn't exist, should create the file */
+
+        if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                        fapl_id, HADDR_UNDEF))) 
+            CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+
+        /********** Buffer setup to test write data to the file  **********/
+
+        /* set the eoa so we can write the page of data */
+        if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(plaintext_size)) < 0 )
+            CRYPT_TEST_FAULT("couldn't set file eoa\n");
+        
+        /* Write the data to the file */
+        if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, 
+                        write_buf) < 0)
+            CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+        /* Reads the data back that was just written */
+        if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, 
+                        read_buf) < 0)
+            CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+        if (memcmp(write_buf, read_buf, plaintext_size) != 0)
+            CRYPT_TEST_FAULT("data read from file does not match data written\n");
+
+
+        if (H5Pclose(fapl_id) < 0) {
+            CRYPT_TEST_FAULT("can't close fapl\n");
+        }
+        fapl_id = H5I_INVALID_HID;
+
+        if (H5FDclose(file_ptr) < 0) {
+            CRYPT_TEST_FAULT("can't close file\n");
+        }
+        file_ptr = NULL;
+
+
+    } /* end for ( int c = 0; c < num_ciphers; c++ ) */
+
+    if ( key_file_created )
+    {
+        if ( remove(key_file_path) != 0 )
+            CRYPT_TEST_FAULT("failed to delete key file\n");
+    }
+
+    if ( cl_file_created )
+    {
+        if ( remove(cl_file_path) != 0 )
+            CRYPT_TEST_FAULT("failed to delete cl file\n");
+    }
+
+done:
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+    }
+
+    if ( write_buf )
+        free(write_buf);
+
+    if ( read_buf )
+        free(read_buf);
+
+
+    return ret_value;
+
+}/* end crypt_test_with_cl_and_key_from_files() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    create_files_for_crypt
+ *
+ * Purpose:     Helper function for crypt_test_with_cl_and_key_from_files()
+ *              to create the files needed for that test and sets parameter
+ *              char *file_path to the path of the created file.
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ *-------------------------------------------------------------------------
+ */
+static int
+create_files_for_crypt(const char *file_name, const char *config_str, char *file_path,  int file_type)
+{
+    size_t  written;
+    uint8_t *test_key = NULL;
+
+    int    ret_value = 0;
+
+    test_key = malloc(H5FD_CRYPT_DEFAULT_KEY_SIZE);
+    memcpy(test_key, H5FD_CRYPT_TEST_KEY, H5FD_CRYPT_DEFAULT_KEY_SIZE);
+
+    /* Open the file and truncate if it already exists */
+    FILE *fp = fopen(file_name, "w");
+    if ( !fp ) 
+    {
+        CRYPT_TEST_FAULT("fopen failed to open/create key_file\n");
+    }
+
+    if ( file_type == 0 )
+    {
+        assert(config_str);
+
+        written = fwrite(config_str, 1, strlen(config_str), fp);
+        if ( written == 0 )
+        {
+            CRYPT_TEST_FAULT("fwrite failed to write config_str to config file\n");
+        }
+    }
+    else if ( file_type == 1 )
+    {
+        /* Write the test key to the file */
+        written = fwrite(test_key, 1, H5FD_CRYPT_DEFAULT_KEY_SIZE, fp);
+        if ( written != H5FD_CRYPT_DEFAULT_KEY_SIZE)
+        {
+            CRYPT_TEST_FAULT("fwrite failed to write crypt key to key file\n");
+        }
+    }
+
+
+    /* Get the absolute path to the file */
+    if ( realpath(file_name, file_path) == NULL )
+        CRYPT_TEST_FAULT("failed to get absolute path to file \n");
+
+
+done:
+
+    if ( fp )
+    {
+        fclose(fp);
+    }
+
+    free(test_key);
+
+    return ret_value;
+
+} /* end create_key_file() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    crypt_test_using_key_path_env
+ *
+ * Purpose:     Tests that the encryption VFD can use a path to a key file
+ *              to access the key via the environment variable 
+ *              H5FD_CRYPT_KEY_PATH
+ *
+ * Return:      Success:        0
+ *              Failure:        -1
+ *
+ * Description: Creates a key file and mallocs the necessary buffers for the
+ *              test.
+ * 
+ *              Closes the library to set the environment varaible
+ *              H5FD_CRYPT_KEY_PATH to the path of the key file, then re-opens
+ *              the library.
+ * 
+ *              Uses either config_str or vfd_config depending on the
+ *              parameter bool cl_config to set the encryption VFD's 
+ *              configuration.
+ * 
+ *              Creates and opens a new file and performs a write to it, then
+ *              reads that back and compares to ensure what was written and
+ *              read is correct.
+ * 
+ *              Closes the library to reset the environment variable back
+ *              to default, and closes and deletes the key file.
+ *
+ *-------------------------------------------------------------------------
+ */
+static int 
+crypt_test_using_key_path_env(bool cl_config)
+{
+    char             filename[1024];
+    hid_t            fapl_id          = H5I_INVALID_HID;
+    H5FD_t          *file_ptr         = NULL;
+    unsigned char   *write_buf        = NULL;
+    unsigned char   *read_buf         = NULL;
+    size_t           plaintext_size   = H5FD_CRYPT_DEFAULT_PLAINTEXT_PAGE_SIZE;
+    const char      *key_file_name    = "test_key_file.txt";
+    char             key_file_path[512];
+    char            *returned_env_var = NULL;
+    bool             env_set          = FALSE;
+    bool             key_file_created = FALSE;
+
+    int              ret_value        = 0;
+
+
+    /* Create a key file */
+    if ( create_files_for_crypt(key_file_name, NULL, key_file_path, 1) != 0 )
+        CRYPT_TEST_FAULT("failed to create and write test key to key file\n");
+
+    key_file_created = TRUE;
+
+    /* Buffer to hold the data that will be used to test the write function */
+    write_buf = malloc(plaintext_size);
+    if (NULL == write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (plaintext_size); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /* Buffer for the read test to try to store the page that was just written */
+    read_buf = malloc(plaintext_size);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+
+    /**
+     * Tests creating, opening, writing and reading an encrypted file with the
+     * encryption key stored in a separate key file with the path to the key file
+     * set to an environment variable.
+     */
+    char config_str[] =
+        "( page_buffer "
+        "  ( ( page_size 4096 )"
+        "    ( max_num_pages 16 )"
+        "    ( replacement_policy 0 )"
+        "    ( underlying_VFD "
+        "      ( encryption_VFD "
+        "        ( ( plaintext_page_size  4096 )"
+        "          ( ciphertext_page_size 4112 )"
+        "          ( encryption_buffer_size 65792 )"
+        "          ( cipher 0 )"
+        "          ( cipher_block_size 16 )"
+        "          ( iv_size 16 )"
+        "          ( mode 0 )"
+        "          ( underlying_VFD ( sec2 () ) )"
+        "        )"
+        "      )"
+        "    )"
+        "  )"
+        ")";
+
+    H5FD_crypt_vfd_config_t vfd_config = 
+    {
+        /* magic                  = */ H5FD_CRYPT_CONFIG_MAGIC,
+        /* version                = */ H5FD_CURR_CRYPT_VFD_CONFIG_VERSION,
+        /* plaintext_page_size    = */ H5FD_CRYPT_DEFAULT_PLAINTEXT_PAGE_SIZE,
+        /* ciphertext_page_size   = */ H5FD_CRYPT_DEFAULT_CIPHERTEXT_PAGE_SIZE,
+        /* encryption_buffer_size = */ H5FD_CRYPT_DEFAULT_ENCRYPTION_BUFFER_SIZE,
+        /* cipher                 = */ H5FD_CRYPT_DEFAULT_CIPHER,  
+        /* cipher_block_size      = */ H5FD_CRYPT_DEFAULT_CIPHER_BLOCK_SIZE,
+        /* key_size               = */ 0,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
+        /* iv_size                = */ H5FD_CRYPT_DEFAULT_IV_SIZE,
+        /* mode                   = */ H5FD_CRYPT_DEFAULT_MODE,
+        /* fapl_id                = */ H5P_DEFAULT
+    };
+
+    /* setup the target file name, and delete any existing instance */
+    h5_fixname(FILENAME[17], H5P_DEFAULT, filename, 1024);
+    HDremove(filename);
+
+    /* Set the key path environment variable */
+    
+    /* Close the library to set the environment variables before reopening the library */
+    H5close();
+
+    /* Set environment variable */
+    if ( setenv(HDF5_CRYPT_KEY_PATH, key_file_path, 1) != 0 )
+        CRYPT_TEST_FAULT("failed to set environment variable\n");
+
+    env_set = TRUE;
+
+    /* Re-open the library */
+    H5open();
+
+
+    /* Double check the environment variables were set correctly */
+
+    returned_env_var = getenv(HDF5_CRYPT_KEY_PATH);
+
+    if ( strcmp(key_file_path, returned_env_var) != 0 )
+        CRYPT_TEST_FAULT("returned environment variable doesn't match\n");
+
+
+
+    /* create and initialize FAPL for the encryption VFD */
+
+    if ((fapl_id = H5Pcreate(H5P_FILE_ACCESS)) == H5I_INVALID_HID) {
+        CRYPT_TEST_FAULT("can't create FAPL ID\n");
+    }
+
+    if ( cl_config ) {
+
+        if (H5CL_load_vfd_config_str_into_fapl(fapl_id, config_str) < 0) {
+            CRYPT_TEST_FAULT("can't load config string into fapl\n");
+        }
+
+        /**
+         * Returns H5FD_PB, because the page_buffer is set as the top
+         * most VFD in a stack (page_buffer->encryption->sec2)
+         */
+        if (H5Pget_driver(fapl_id) != H5FD_PB) {
+            CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+        }
+    } 
+    else {
+
+        if (H5Pset_fapl_crypt(fapl_id, &vfd_config) < 0) {
+            CRYPT_TEST_FAULT("can't set enryption VFD FAPL\n");
+        }
+
+        if (H5Pget_driver(fapl_id) != H5FD_CRYPT) {
+            CRYPT_TEST_FAULT("set FAPL not encryption VFD\n");
+        }
+    }
+
+
+
+    if ( cl_config ) {
+
+        if (compare_crypt_config_str(fapl_id, config_str) < 0) {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+
+    } else {
+
+        if (compare_crypt_config_info(fapl_id, &vfd_config) < 0) {
+            CRYPT_TEST_FAULT("information mismatch\n");
+        }
+    }
+
+
+    /* Opens a file that doesn't exist, should create the file */
+    if (NULL == (file_ptr = H5FDopen(filename, H5F_ACC_RDWR | H5F_ACC_CREAT,
+                    fapl_id, HADDR_UNDEF))) 
+        CRYPT_TEST_FAULT("couldn't get pointer to H5FD_t structure\n");
+
+
+
+    /********** Buffer setup to test write data to the file  **********/
+
+    /* Buffer to hold the data that will be used to test the write function */
+    write_buf = malloc(plaintext_size);
+    if (NULL == write_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for write_buf\n");
+
+    /* Fill the buffer with random characters to simulate data */
+    for (size_t i = 0; i < (plaintext_size); i++)
+        write_buf[i] = (unsigned char)rand() % 256;
+
+    /* set the eoa so we can write the page of data */
+    if ( H5FDset_eoa(file_ptr, H5FD_MEM_DEFAULT, (haddr_t)(plaintext_size)) < 0 )
+        CRYPT_TEST_FAULT("couldn't set file eoa\n");
+    
+    /* Write the data to the file */
+    if (H5FDwrite(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, 
+                    write_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't write data to file\n");
+
+    /* Buffer for the read test to try to store the page that was just written */
+    read_buf = malloc(plaintext_size);
+    if (NULL == read_buf)
+        CRYPT_TEST_FAULT("couldn't allocate memory for read_buf\n");
+
+    /* Reads the data back that was just written */
+    if (H5FDread(file_ptr, H5FD_MEM_DEFAULT, H5P_DEFAULT, 0, plaintext_size, 
+                    read_buf) < 0)
+        CRYPT_TEST_FAULT("couldn't read data from file\n");
+
+    if (memcmp(write_buf, read_buf, plaintext_size) != 0)
+        CRYPT_TEST_FAULT("data read from file does not match data written\n");
+
+
+    if (H5Pclose(fapl_id) < 0) {
+        CRYPT_TEST_FAULT("can't close fapl\n");
+    }
+    fapl_id = H5I_INVALID_HID;
+
+    if (H5FDclose(file_ptr) < 0) {
+        CRYPT_TEST_FAULT("can't close file\n");
+    }
+    file_ptr = NULL;
+
+
+    /* Close the library */
+    H5close();
+
+    /* Set environment variable back to default values */
+    if ( unsetenv(HDF5_CRYPT_KEY_PATH) != 0 )
+        CRYPT_TEST_FAULT("failed to clear environment variable\n");
+
+    env_set = FALSE;
+
+    /* Re-open the library */
+    H5open();
+
+    /* Double check the environment variables were set correctly */
+    returned_env_var = getenv(HDF5_CRYPT_KEY_PATH);
+
+    if ( returned_env_var )
+        CRYPT_TEST_FAULT("environment variable not default\n");
+
+
+    if ( key_file_created )
+    {
+        if ( remove(key_file_path) != 0 )
+            CRYPT_TEST_FAULT("failed to delete key file\n");
+    }
+
+
+done:
+
+    if ( fapl_id != H5I_INVALID_HID )
+    {
+        H5Pclose(fapl_id);
+    }
+    
+    if ( file_ptr )
+    {
+        H5FDclose(file_ptr);
+    }
+
+    if ( write_buf )
+        free(write_buf);
+
+    if ( read_buf )
+        free(read_buf);
+
+
+    if ( env_set )
+    {
+        H5close();
+        unsetenv(HDF5_CRYPT_KEY_PATH);
+        H5open();
+    }
+
+
+    return ret_value;
+
+} /* end crypt_test_using_key_path_env() */
 
 
 /*-------------------------------------------------------------------------
@@ -10171,16 +10798,16 @@ done:
 static int
 run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id, bool cl_config)
 {
-    hid_t                    file_id           = H5I_INVALID_HID;
-    hid_t                    dset_id           = H5I_INVALID_HID;
-    hid_t                    space_id          = H5I_INVALID_HID;
-    hid_t                    fapl_id_out       = H5I_INVALID_HID;
-    hid_t                    pb_fapl_id_cpy    = H5I_INVALID_HID;
-    hid_t                    crypt_fapl_id_cpy = H5I_INVALID_HID;
-    hid_t                    pb_fapl_id        = H5I_INVALID_HID;
-    hid_t                    crypt_fapl_id     = H5I_INVALID_HID;
-    char                     filename[1024];
-    char                  config_str_sub_sec2[] =
+    hid_t file_id           = H5I_INVALID_HID;
+    hid_t dset_id           = H5I_INVALID_HID;
+    hid_t space_id          = H5I_INVALID_HID;
+    hid_t fapl_id_out       = H5I_INVALID_HID;
+    hid_t pb_fapl_id_cpy    = H5I_INVALID_HID;
+    hid_t crypt_fapl_id_cpy = H5I_INVALID_HID;
+    hid_t pb_fapl_id        = H5I_INVALID_HID;
+    hid_t crypt_fapl_id     = H5I_INVALID_HID;
+    char  filename[1024];
+    char  config_str_sub_sec2[] =
         "( page_buffer "
         "  ( ( page_size 4096 )"
         "    ( max_num_pages 64 )"
@@ -10202,7 +10829,7 @@ run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id, 
         "    )"
         "  )"
         ")";
-    char                  config_str_sub_default[] =
+    char  config_str_sub_default[] =
         "( page_buffer "
         "  ( ( page_size 4096 )"
         "    ( max_num_pages 64 )"
@@ -10243,13 +10870,16 @@ run_crypt_test(const struct crypt_dataset_def *data, const hid_t child_fapl_id, 
         /* cipher                 = */ 0,  
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
     };
     int                   ret_value        = 0;
 
+    crypt_vfd_config.key = malloc(crypt_vfd_config.key_size);
+    memcpy(crypt_vfd_config.key, H5FD_CRYPT_TEST_KEY, crypt_vfd_config.key_size);
 
     /* setup the target file name, and delete any existing instance */
 
@@ -10516,6 +11146,9 @@ done:
         H5E_END_TRY
     }
 
+    if ( crypt_vfd_config.key )
+        free(crypt_vfd_config.key);
+
     return ret_value;
 
 } /* end run_crypt_test() */
@@ -10602,7 +11235,8 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl
         /* cipher                 = */ 0,  
         /* cipher_block_size      = */ 16,
         /* key_size               = */ 32,
-        /* key                    = */ H5FD_CRYPT_TEST_KEY,
+        /* key_path               = */ NULL,
+        /* key                    = */ NULL,
         /* iv_size                = */ 16,
         /* mode                   = */ 0,
         /* fapl_id                = */ H5P_DEFAULT
@@ -10611,6 +11245,9 @@ crypt_RO_test(const struct crypt_dataset_def *data, hid_t child_fapl_id, bool cl
     hid_t                    crypt_fapl_id    = H5I_INVALID_HID;
     hid_t                    file_id          = H5I_INVALID_HID;
     int                      ret_value        = 0;
+
+    crypt_vfd_config.key = malloc(crypt_vfd_config.key_size);
+    memcpy((void *)crypt_vfd_config.key, (const void *)H5FD_CRYPT_TEST_KEY, crypt_vfd_config.key_size);
 
     /* setup the target file name, and delete any existing instance */
 
@@ -10746,6 +11383,9 @@ done:
         }
         H5E_END_TRY
     }
+
+    if ( crypt_vfd_config.key )
+        free(crypt_vfd_config.key);
 
     return ret_value;
 
@@ -10960,13 +11600,27 @@ test_crypt(bool cl_config)
     size_t                   num_buf_sizes;
     int32_t                  num_ciphers      = sizeof(cipher_array) / sizeof(cipher_array[0]);
     size_t                   num_pages;
-    bool                     test_quick       = FALSE;   
+    bool                     test_quick       = FALSE;  
+    uint8_t                 *test_key         = NULL;
 
 #if CRYPT_DEBUG_QUICK
     test_quick = TRUE;
 #endif
 
     testExpress = GetTestExpress();
+
+
+    /**
+     * Sets up the encryption tests based on the TestExpress level, and
+     * the global flag CRYPT_DEBUG_QUICK.
+     * 
+     * The lower TestExpress the more and larger page sizes, encryption
+     * buffer size, and number of pages tested.
+     * 
+     * If CRYPT_DEBUG_QUICK is set, only one page size and buffer size
+     * is tested, to quickly run through all encryption tests for 
+     * faster debugging.
+     */
 
     /* testExpress = 0*/
                                /* 1/2 KB 4 KB  128 KB   1 MB     4 MB     16 MB */
@@ -10984,7 +11638,7 @@ test_crypt(bool cl_config)
     static size_t  pt_array_3[]  = {512, 4096, 1048576};
     static size_t  buf_array_3[] = {1, 16};
 
-    /* testExpress == 3 */
+    /* CRYPT_DEBUG_QUICK */
     static size_t  pt_array_quick[]  = {4096};
     static size_t  buf_array_quick[] = {16};
 
@@ -11069,6 +11723,7 @@ test_crypt(bool cl_config)
         TEST_ERROR;
     }
 
+
     /* Test Read-Only access, including when the file does not exist.
      */
 
@@ -11098,6 +11753,9 @@ test_crypt(bool cl_config)
 
     if ( test_crypt_fapl(cl_config) != 0 )
         TEST_ERROR;
+
+    /* Allocate the test key */
+    test_key = malloc(H5FD_CRYPT_DEFAULT_KEY_SIZE);
 
     /* Run tests iterating through page sizes */
     for ( size_t p = 0; p < num_page_sizes; p++ )
@@ -11142,12 +11800,15 @@ test_crypt(bool cl_config)
                     /* encryption_buffer_size = */ crypt_buf_sizes[b] * (16 + plaintext_sizes[p]),
                     /* cipher                 = */ cipher_array[c],  
                     /* cipher_block_size      = */ 16,
-                    /* key_size               = */ 32,
-                    /* key                    = */ H5FD_CRYPT_TEST_KEY,
+                    /* key_size               = */ H5FD_CRYPT_DEFAULT_KEY_SIZE,
+                    /* key_path               = */ NULL,
+                    /* key                    = */ NULL,
                     /* iv_size                = */ 16,
                     /* mode                   = */ 0,
                     /* fapl_id                = */ H5P_DEFAULT
                 };
+                vfd_config.key = test_key;
+                memcpy(vfd_config.key, H5FD_CRYPT_TEST_KEY, vfd_config.key_size);
 
                 /* Tests creating a file with the encryption VFD */
                 if ( crypt_test_create(config_str_ptr, vfd_config) != 0 )
@@ -11181,24 +11842,38 @@ test_crypt(bool cl_config)
     if ( crypt_test_invalid_addrs_and_buffs(cl_config) < 0 ) 
         TEST_ERROR;
 
+    /* Tests using an environment variable to store the path to a key file */
+    if ( crypt_test_using_key_path_env(cl_config) < 0 )
+        TEST_ERROR;
 
     if ( cl_config )
     {
-        if ( crypt_test_using_env_var() < 0 )
+        /* Tests setting config with environment variables */
+        if ( crypt_test_with_cl_using_env() < 0 )
             TEST_ERROR;
 
-        if ( crypt_test_invalid_config_using_env_var() < 0 ) 
+        if ( crypt_test_invalid_config_using_env() < 0 ) 
             TEST_ERROR;
 
+        /**
+         * Tests setting config data and retrieving 
+         * encryption key from separate files.
+         */
+        if ( crypt_test_with_cl_and_key_from_files() < 0 )
+            TEST_ERROR;
     }
 
+    if ( test_key )
+        free(test_key);
 
     PASSED();
-
 
     return 0;
 
 error:
+
+    if ( test_key )
+        free(test_key);
 
     return -1;
 

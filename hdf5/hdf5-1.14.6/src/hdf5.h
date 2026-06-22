@@ -40,6 +40,8 @@
 #include "H5VLpublic.h" /* Virtual Object Layer                     */
 #include "H5Zpublic.h"  /* Data filters                             */
 
+#include "H5CLpublic.h"
+
 /* Plugin/component developer headers */
 #include "H5ESdevelop.h" /* Event Sets */
 #include "H5FDdevelop.h" /* File drivers */
