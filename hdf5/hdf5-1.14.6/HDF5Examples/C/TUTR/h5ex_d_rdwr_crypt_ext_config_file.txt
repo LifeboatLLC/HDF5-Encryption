@@ -1,0 +1,21 @@
+( page_buffer 
+  ( ( page_size 4096 )
+    ( max_num_pages 16 )
+    ( replacement_policy 0 )
+    ( underlying_VFD 
+      ( encryption_VFD 
+        ( ( plaintext_page_size  4096 )
+          ( ciphertext_page_size 4112 )
+          ( encryption_buffer_size 65792 )
+          ( cipher 0 )
+          ( cipher_block_size 16 )
+          ( key_size  32 )
+          ( key --5E73C3BFC3A22CC2AA54055DC3B56169C38E5F7DC395C2AC23C2BE4C14C3B33B )
+          ( iv_size 16 )
+          ( mode 0 )
+          ( underlying_VFD ( sec2 () ) )
+        )
+      )
+    )
+  )
+)
